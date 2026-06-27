@@ -161,6 +161,13 @@ func runDaemon(cfg *Config, st *State, ntfy *NtfyClient) {
 	d := newDaemon(cfg, st, ntfy)
 	d.Start(ctx)
 
+	// Start the web server (HTTP API + UI). If [web] token is
+	// empty, this is a no-op and the daemon runs headless.
+	ws := newWebServer(cfg, d, st)
+	if err := ws.Start(); err != nil {
+		log.Printf("web server: %v", err)
+	}
+
 	if *flagVerbose {
 		enabled := 0
 		for _, s := range cfg.Sources {
@@ -175,6 +182,7 @@ func runDaemon(cfg *Config, st *State, ntfy *NtfyClient) {
 	// or by a future config-reload path that wants to restart us).
 	<-ctx.Done()
 
+	ws.Stop()
 	d.Stop()
 	st.LastRun = time.Now().UTC()
 	if err := saveState(*flagState, st); err != nil {

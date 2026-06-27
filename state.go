@@ -169,6 +169,23 @@ func saveState(path string, s *State) error {
 	return os.Rename(tmp, path)
 }
 
+// All returns a snapshot of all per-source runtime states. The
+// map values are deep copies, so callers can mutate the returned
+// map without affecting the in-memory state. The web UI's
+// /api/state handler is the primary consumer.
+func (s *State) All() map[string]*SourceState {
+	out := make(map[string]*SourceState, len(s.Sources))
+	for id, src := range s.Sources {
+		cp := *src
+		cp.ItemsSeen = make(map[string]bool, len(src.ItemsSeen))
+		for k, v := range src.ItemsSeen {
+			cp.ItemsSeen[k] = v
+		}
+		out[id] = &cp
+	}
+	return out
+}
+
 // remember updates the in-memory state for a source with the
 // current item set and the run metadata. Pass now=time.Now() and
 // the interval used to schedule the next run (computed by the
