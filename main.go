@@ -107,7 +107,13 @@ func main() {
 	anyError := false
 	for i := range cfg.Sources {
 		s := &cfg.Sources[i]
-		if err := checkOne(ctx, ntfy, st, s); err != nil {
+		interval, err := time.ParseDuration(s.ResolvedInterval(cfg.Check.Interval))
+		if err != nil {
+			log.Printf("[%s] error: invalid interval %q: %v", s.ID, s.ResolvedInterval(cfg.Check.Interval), err)
+			anyError = true
+			continue
+		}
+		if err := checkOne(ctx, ntfy, st, s, interval); err != nil {
 			log.Printf("[%s] error: %v", s.ID, err)
 			anyError = true
 		}
@@ -124,7 +130,7 @@ func main() {
 	}
 }
 
-func checkOne(ctx context.Context, ntfy *NtfyClient, st *State, s *Source) error {
+func checkOne(ctx context.Context, ntfy *NtfyClient, st *State, s *Source, interval time.Duration) error {
 	items, err := fetchSource(ctx, s)
 	if err != nil {
 		// Surface the error to ntfy as a separate notification so the
@@ -142,13 +148,14 @@ func checkOne(ctx context.Context, ntfy *NtfyClient, st *State, s *Source) error
 		return err
 	}
 
-	lastSeen, exists := st.Sources[s.ID]
+	srcState, exists := st.Sources[s.ID]
 
 	// First run for this source: record the baseline and stay quiet.
 	// We don't want a flood of "new" notifications for the 154 h3
 	// entries that already exist on the changelog.
 	if !exists {
-		st.remember(s.ID, items)
+		now := time.Now().UTC()
+		st.remember(s.ID, items, now, interval, 0, 0, "")
 		if *flagVerbose {
 			log.Printf("[%s] first run, baseline set (%d items), no notification", s.ID, len(items))
 		}
@@ -164,12 +171,12 @@ func checkOne(ctx context.Context, ntfy *NtfyClient, st *State, s *Source) error
 	var added []Item
 	for _, it := range items {
 		currentSet[it.ID] = true
-		if !lastSeen[it.ID] {
+		if !srcState.ItemsSeen[it.ID] {
 			added = append(added, it)
 		}
 	}
 	var removed []Item
-	for id := range lastSeen {
+	for id := range srcState.ItemsSeen {
 		if !currentSet[id] {
 			// The ID is the human-readable identifier for html/json
 			// sources (entry text or model id). Use it as both ID and
@@ -179,7 +186,8 @@ func checkOne(ctx context.Context, ntfy *NtfyClient, st *State, s *Source) error
 	}
 
 	// Always remember the current set, even when nothing changes.
-	defer st.remember(s.ID, items)
+	now := time.Now().UTC()
+	defer st.remember(s.ID, items, now, interval, len(added), len(removed), "")
 
 	if len(added) == 0 && len(removed) == 0 {
 		if *flagVerbose {
