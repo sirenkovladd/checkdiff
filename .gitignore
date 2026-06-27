@@ -1,0 +1,5 @@
+/bin/
+/com.checkdiff.plist
+*.test
+*.out
+/docs/superpowers/

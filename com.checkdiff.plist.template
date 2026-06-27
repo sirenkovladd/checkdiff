@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  This is a TEMPLATE. `make install` runs `make plist` to substitute
+  @BINARY@, @CONFIG@, @STATE@, @INTERVAL@, @USER@, @LOG_DIR@
+  against this file and write the real com.checkdiff.plist to
+  ~/.checkdiff/.
+
+  Run interval: every @INTERVAL@s (read from the config's
+  [check].check_interval, default 3600s = 1 hour) from when the
+  agent is loaded. The first run is the load itself; subsequent
+  runs are at the configured interval.
+
+  Logs are appended to @LOG_DIR@/checkdiff.log; rotate them yourself
+  (e.g. `newsyslog` or a manual `> file`).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.checkdiff</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>@BINARY@</string>
+    <string>-config</string>
+    <string>@CONFIG@</string>
+    <string>-state</string>
+    <string>@STATE@</string>
+    <string>-v</string>
+  </array>
+
+  <!-- launchd's default PATH is /usr/bin:/bin:/usr/sbin:/sbin, which
+       doesn't include Homebrew or mise. Add the common ones so `gh`
+       is found. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/@USER@/.local/bin</string>
+    <key>HOME</key>
+    <string>/Users/@USER@</string>
+  </dict>
+
+  <key>StartInterval</key>
+  <integer>@INTERVAL@</integer>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>@LOG_DIR@/checkdiff.log</string>
+  <key>StandardErrorPath</key>
+  <string>@LOG_DIR@/checkdiff.log</string>
+
+  <!-- If the laptop is asleep at the scheduled tick, fire as soon as
+       it wakes. Hourly is short enough that we don't need to backfill
+       missed runs. -->
+  <key>Wake</key>
+  <false/>
+</dict>
+</plist>
