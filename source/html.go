@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -30,6 +31,9 @@ func (htmlFetcher) Type() string { return "html" }
 // content is the stable identifier.
 func (htmlFetcher) Fetch(ctx context.Context, s *Source, now time.Time) ([]Item, error) {
 	url := template.Render(s.URL, now)
+	if fetchVerbose {
+		log.Printf("[%s] fetch: GET %s", s.ID, url)
+	}
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err

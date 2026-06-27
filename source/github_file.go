@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os/exec"
 	"strings"
 	"time"
@@ -48,6 +49,9 @@ type githubContents struct {
 // decoded content. Either way, the returned Item has exactly
 // one entry.
 func (githubFileFetcher) Fetch(ctx context.Context, s *Source, now time.Time) ([]Item, error) {
+	if fetchVerbose {
+		log.Printf("[%s] fetch: gh api repos/%s/%s/contents/%s?ref=%s", s.ID, s.Owner, s.Repo, s.Path, s.Ref)
+	}
 	gh, err := ResolveGhBinary(GhPath())
 	if err != nil {
 		return nil, err

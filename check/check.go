@@ -120,11 +120,20 @@ func One(
 	}
 
 	n := source.Format(s, added, removed)
+	if verbose {
+		log.Printf("[%s] notify attempt: topic=%s title=%q body=%d bytes", s.ID, ntfy.Topic(), n.Title, len(n.Body))
+	}
 	if err := ntfy.Publish(ctx, n); err != nil {
+		// Logged separately from the daemon's generic "check
+		// failed" line so the user can see at a glance that
+		// the failure was on the notify path, not the fetch
+		// path. The fetch is in state (items remembered), so
+		// the next tick will retry the publish.
+		log.Printf("[%s] notify failed: %v", s.ID, err)
 		return fmt.Errorf("publish: %w", err)
 	}
 	if verbose {
-		log.Printf("[%s] notified ntfy: %d added, %d removed", s.ID, len(added), len(removed))
+		log.Printf("[%s] notify ok: %d added, %d removed", s.ID, len(added), len(removed))
 	}
 	return nil
 }

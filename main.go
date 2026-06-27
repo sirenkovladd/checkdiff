@@ -108,6 +108,13 @@ func main() {
 	// fetch; the value is read by Fetch via GhPath.
 	source.SetGhPath(*flagGhPath)
 
+	// -v turns on per-fetch log lines across all fetchers
+	// (URL, status, item count) and explicit notify
+	// attempt/failure lines in check.One. Set once at
+	// startup; the per-source goroutines read the package-
+	// level flag.
+	source.SetVerbose(*flagVerbose)
+
 	if *flagVerbose {
 		enabled := 0
 		for i := range cfg.Sources {

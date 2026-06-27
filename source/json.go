@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -29,6 +30,9 @@ func (jsonFetcher) Type() string { return "json" }
 // and removals are detectable across runs.
 func (jsonFetcher) Fetch(ctx context.Context, s *Source, now time.Time) ([]Item, error) {
 	url := template.Render(s.URL, now)
+	if fetchVerbose {
+		log.Printf("[%s] fetch: GET %s (items_path=%q)", s.ID, url, s.ItemsPath)
+	}
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err

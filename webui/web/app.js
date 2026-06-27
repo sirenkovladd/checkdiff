@@ -92,7 +92,10 @@ function renderSources(sources, state) {
     const tr = document.createElement("tr");
     tr.appendChild(td(src.id));
     tr.appendChild(td(src.name));
-    tr.appendChild(td(src.type));
+    // type can be undefined for a misconfigured source; show
+    // a clear "(no type)" rather than an empty cell so the
+    // user notices and can fix it in the Edit dialog.
+    tr.appendChild(td(src.type || "—"));
     tr.appendChild(td(src.url || ""));
     tr.appendChild(td(src.check_interval || ""));
     tr.appendChild(td(src.enabled !== false ? "yes" : "no"));

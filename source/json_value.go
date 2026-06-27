@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -36,6 +37,18 @@ import (
 // kind of signal.
 type jsonValueFetcher struct{}
 
+// fetchVerbose is the package-level verbose flag. It mirrors
+// the daemon's verbose: the daemon sets it once at startup so
+// each fetcher can log its fetch URL and result without
+// threading verbose through every Fetch call. Set by
+// source.SetVerbose.
+var fetchVerbose bool
+
+// SetVerbose turns on per-fetch log lines across all
+// fetchers. Called once by the daemon at startup based on
+// the -v CLI flag.
+func SetVerbose(v bool) { fetchVerbose = v }
+
 // Type returns the registry key for this fetcher.
 func (jsonValueFetcher) Type() string { return "json_value" }
 
@@ -45,6 +58,9 @@ func (jsonValueFetcher) Type() string { return "json_value" }
 // one-remove pair.
 func (jsonValueFetcher) Fetch(ctx context.Context, s *Source, now time.Time) ([]Item, error) {
 	url := template.Render(s.URL, now)
+	if fetchVerbose {
+		log.Printf("[%s] fetch: GET %s", s.ID, url)
+	}
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
@@ -70,7 +86,14 @@ func (jsonValueFetcher) Fetch(ctx context.Context, s *Source, now time.Time) ([]
 
 	value, err := ExtractJSONValue(body, s.Path)
 	if err != nil {
+		// Logged here in addition to the daemon's generic
+		// "check failed" so the user can see the path that
+		// failed and the underlying JSON error.
+		log.Printf("[%s] fetch failed at path %q: %v", s.ID, s.Path, err)
 		return nil, fmt.Errorf("%s: %w", url, err)
+	}
+	if fetchVerbose {
+		log.Printf("[%s] fetch ok: value=%q (path=%q)", s.ID, value, s.Path)
 	}
 	return []Item{{ID: value, Title: value}}, nil
 }
