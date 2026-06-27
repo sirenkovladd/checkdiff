@@ -119,7 +119,7 @@ func One(
 		log.Printf("[%s] %d items, %d added, %d removed", s.ID, len(items), len(added), len(removed))
 	}
 
-	n := source.Format(s, added, removed)
+	n := source.Format(ctx, s, added, removed)
 	if verbose {
 		log.Printf("[%s] notify attempt: topic=%s title=%q body=%d bytes", s.ID, ntfy.Topic(), n.Title, len(n.Body))
 	}
