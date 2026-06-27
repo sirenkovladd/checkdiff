@@ -1,0 +1,27 @@
+[Unit]
+Description=checkdiff daemon
+# Network is needed for fetching source URLs and publishing to
+# ntfy. After=network-online.target waits for DHCP / link-local
+# addressing to complete so the first check doesn't race the
+# network coming up.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/checkdiff -daemon -config /etc/checkdiff/config.toml -state /var/lib/checkdiff/state.json
+Restart=always
+RestartSec=5
+
+# Hardening: the daemon doesn't need to write to the filesystem
+# beyond the state file. The state directory must be writable
+# (StateDirectory= handles that), and ProtectSystem=strict
+# makes everything else read-only.
+StateDirectory=checkdiff
+ConfigurationDirectory=checkdiff
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
