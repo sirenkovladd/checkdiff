@@ -135,3 +135,61 @@ func TestSourceResolvedInterval(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadConfigWebBlockDefaults(t *testing.T) {
+	// A config without a [web] block should get sensible defaults:
+	// Listen = 127.0.0.1:8080, Token = "" (web disabled).
+	body := `
+[ntfy]
+topic = "test"
+
+[check]
+check_interval = "1h"
+
+[[sources]]
+id   = "x"
+name = "x"
+type = "json"
+url  = "https://example.com"
+`
+	cfg, err := loadConfig(writeConfig(t, body))
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.Web.Listen != "127.0.0.1:8080" {
+		t.Errorf("Web.Listen = %q, want %q", cfg.Web.Listen, "127.0.0.1:8080")
+	}
+	if cfg.Web.Token != "" {
+		t.Errorf("Web.Token = %q, want empty (web disabled by default)", cfg.Web.Token)
+	}
+}
+
+func TestLoadConfigWebBlockExplicit(t *testing.T) {
+	body := `
+[ntfy]
+topic = "test"
+
+[check]
+check_interval = "1h"
+
+[web]
+listen = "0.0.0.0:9090"
+token  = "secret123"
+
+[[sources]]
+id   = "x"
+name = "x"
+type = "json"
+url  = "https://example.com"
+`
+	cfg, err := loadConfig(writeConfig(t, body))
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if cfg.Web.Listen != "0.0.0.0:9090" {
+		t.Errorf("Web.Listen = %q, want %q", cfg.Web.Listen, "0.0.0.0:9090")
+	}
+	if cfg.Web.Token != "secret123" {
+		t.Errorf("Web.Token = %q, want %q", cfg.Web.Token, "secret123")
+	}
+}

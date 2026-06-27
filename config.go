@@ -16,6 +16,7 @@ import (
 type Config struct {
 	Ntfy    NtfyConfig  `toml:"ntfy"`
 	Check   CheckConfig `toml:"check"`
+	Web     WebConfig   `toml:"web"`
 	Sources []Source    `toml:"sources"`
 }
 
@@ -37,6 +38,21 @@ type CheckConfig struct {
 	// hour (for minute-level) or a day (for hour-level) — see
 	// onCalendarFor in timer.go for the full set of accepted values.
 	Interval string `toml:"check_interval"`
+}
+
+// WebConfig holds the optional web UI settings. When Token is
+// empty the web server does not start (the daemon still runs
+// sources; only the HTTP surface is disabled). When Token is
+// non-empty, the HTTP server binds to Listen and requires the
+// token on every request.
+type WebConfig struct {
+	// Listen is the bind address for the HTTP server, e.g.
+	// "127.0.0.1:8080" (localhost only) or ":8080" (all
+	// interfaces). Default: "127.0.0.1:8080".
+	Listen string `toml:"listen"`
+	// Token is the shared secret required to access the web UI
+	// and JSON API. Empty means the web server is disabled.
+	Token string `toml:"token,omitempty"`
 }
 
 // Source describes one thing to monitor. The Type field selects which
@@ -167,6 +183,9 @@ func loadConfig(path string) (*Config, error) {
 	}
 	if c.Check.Interval == "" {
 		c.Check.Interval = "1h"
+	}
+	if c.Web.Listen == "" {
+		c.Web.Listen = "127.0.0.1:8080"
 	}
 	if _, err := time.ParseDuration(c.Check.Interval); err != nil {
 		return nil, fmt.Errorf("config: check.check_interval %q: %w", c.Check.Interval, err)
