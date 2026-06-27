@@ -1,12 +1,16 @@
-package main
+package check
 
-import "testing"
+import (
+	"testing"
+
+	"checkdiff/source"
+)
 
 func TestClickURLFor(t *testing.T) {
 	sourceURL := "https://api.uniuni.example"
 	trackingURL := "https://www.uniuni.com/tracking/#tracking-detail?no=U000180542908940"
-	s := &Source{ID: "uniuni", Name: "uniuni-package", Type: "json", URL: sourceURL}
-	sWithLink := &Source{
+	s := &source.Source{ID: "uniuni", Name: "uniuni-package", Type: "json", URL: sourceURL}
+	sWithLink := &source.Source{
 		ID:   "uniuni",
 		Name: "uniuni-package",
 		Type: "json",
@@ -16,18 +20,18 @@ func TestClickURLFor(t *testing.T) {
 
 	cases := []struct {
 		name  string
-		s     *Source
-		added []Item
+		s     *source.Source
+		added []source.Item
 		want  string
 	}{
 		{
 			name:  "first added item has link → use that",
-			added: []Item{{ID: "U000180542908940", Title: "U000180542908940", Link: trackingURL}},
+			added: []source.Item{{ID: "U000180542908940", Title: "U000180542908940", Link: trackingURL}},
 			want:  trackingURL,
 		},
 		{
 			name: "first added item has no link → fall back to source URL",
-			added: []Item{
+			added: []source.Item{
 				{ID: "a", Title: "A"},
 				{ID: "b", Title: "B", Link: "https://should-not-be-used.example"},
 			},
@@ -40,19 +44,19 @@ func TestClickURLFor(t *testing.T) {
 		},
 		{
 			name:  "all added items have empty links → source URL",
-			added: []Item{{ID: "a", Title: "A"}, {ID: "b", Title: "B"}},
+			added: []source.Item{{ID: "a", Title: "A"}, {ID: "b", Title: "B"}},
 			want:  sourceURL,
 		},
 		{
 			name:  "no per-item links but source has Link → use source Link",
 			s:     sWithLink,
-			added: []Item{{ID: "100", Title: "scan-event"}},
+			added: []source.Item{{ID: "100", Title: "scan-event"}},
 			want:  sWithLink.Link,
 		},
 		{
 			name:  "per-item link wins over source Link",
 			s:     sWithLink,
-			added: []Item{{ID: "100", Title: "scan-event", Link: "https://item.example"}},
+			added: []source.Item{{ID: "100", Title: "scan-event", Link: "https://item.example"}},
 			want:  "https://item.example",
 		},
 	}
@@ -62,8 +66,8 @@ func TestClickURLFor(t *testing.T) {
 			if src == nil {
 				src = s
 			}
-			if got := clickURLFor(src, c.added); got != c.want {
-				t.Errorf("clickURLFor = %q, want %q", got, c.want)
+			if got := ClickURLFor(src, c.added); got != c.want {
+				t.Errorf("ClickURLFor = %q, want %q", got, c.want)
 			}
 		})
 	}

@@ -1,7 +1,6 @@
-package main
+package webapi
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,45 +8,56 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"checkdiff/config"
+	"checkdiff/daemon"
+	"checkdiff/notify"
+	"checkdiff/source"
+	"checkdiff/state"
 )
 
-// newTestWebServer builds a webServer wired to a minimal in-memory
-// daemon and state. The returned server is not started; tests use
-// the underlying handler directly via httptest.
-func newTestWebServer(t *testing.T, token string) *webServer {
+// newTestWebServer builds a Server wired to a minimal
+// in-memory daemon and state. The returned server is not
+// started; tests use the underlying handler directly via
+// httptest.
+func newTestWebServer(t *testing.T, token string) *Server {
 	t.Helper()
-	cfg := &Config{
-		Ntfy:  NtfyConfig{Topic: "test"},
-		Check: CheckConfig{Interval: "1h"},
-		Web:   WebConfig{Listen: "127.0.0.1:0", Token: token},
-		Sources: []Source{
+	cfg := &config.Config{
+		Ntfy:  config.NtfyConfig{Topic: "test"},
+		Check: config.CheckConfig{Interval: "1h"},
+		Web:   config.WebConfig{Listen: "127.0.0.1:0", Token: token},
+		Sources: []source.Source{
 			{ID: "alpha", Name: "alpha", Type: "json", URL: "https://example.com/a"},
 			{ID: "beta", Name: "beta", Type: "html", URL: "https://example.com/b"},
 		},
 	}
-	d := newDaemon(cfg, &State{
-		Version: currentStateVersion,
-		Sources: map[string]*SourceState{},
-	}, NewNtfyClient("https://ntfy.sh", "test"))
-	state := &State{
-		Version: currentStateVersion,
-		Sources: map[string]*SourceState{
-			"alpha": {ItemsSeen: map[string]bool{"x": true}, ItemsCount: 1},
+	d := daemon.NewDaemon(cfg, &state.State{
+		Version: state.CurrentVersion,
+		Sources: map[string]*state.SourceState{},
+	}, notify.New("https://ntfy.sh", "test"))
+	st := &state.State{
+		Version: state.CurrentVersion,
+		Sources: map[string]*state.SourceState{
+			"alpha": {
+				Baseline: &state.Baseline{ItemsSeen: map[string]bool{"x": true}, ItemsCount: 1},
+				Record:   &state.Record{},
+			},
 		},
 	}
-	// newWebServer now takes configPath and statePath so mutating
-	// handlers can persist changes. Tests that don't exercise the
-	// write path use a temp dir.
 	dir := t.TempDir()
-	return newWebServer(cfg, d, state, dir+"/config.toml", dir+"/state.json")
+	return NewServer(cfg, d, st, dir+"/config.toml", dir+"/state.json")
 }
 
-// callAuth is a test helper that hits a path on the auth-wrapped
-// mux with the given token (empty string means no auth).
-func callAuth(ws *webServer, method, path, token, body string) *httptest.ResponseRecorder {
+// callAuth is a test helper that hits a path on the
+// auth-wrapped mux with the given token (empty string means
+// no auth). It registers routes on a fresh mux each call;
+// concurrent callAuth invocations therefore use independent
+// muxes, but the underlying Server's mu serializes the
+// in-memory config mutations.
+func callAuth(ws *Server, method, path, token, body string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	ws.registerRoutes(mux)
-	handler := ws.authMiddleware(mux)
+	ws.RegisterForTest(mux)
+	handler := ws.AuthMiddlewareForTest(mux)
 
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	if body != "" {
@@ -60,6 +70,16 @@ func callAuth(ws *webServer, method, path, token, body string) *httptest.Respons
 	handler.ServeHTTP(rw, req)
 	return rw
 }
+
+// The "ws_..." helpers peek into the Server's state via the
+// methods it exposes. They are used here so we can share the
+// same config / state across multiple auth checks without
+// rebuilding from scratch.
+func ws_cfg(ws *Server) *config.Config { return ws.ConfigForTest() }
+func ws_daemon(ws *Server) *daemon.Daemon { return ws.DaemonForTest() }
+func ws_state(ws *Server) *state.State { return ws.StateForTest() }
+func ws_configPath(ws *Server) string { return ws.ConfigPathForTest() }
+func ws_statePath(ws *Server) string { return ws.StatePathForTest() }
 
 func TestWebAuthRequiresToken(t *testing.T) {
 	ws := newTestWebServer(t, "secret123")
@@ -87,9 +107,11 @@ func TestWebAuthAcceptsHeaderToken(t *testing.T) {
 
 func TestWebAuthAcceptsQueryToken(t *testing.T) {
 	ws := newTestWebServer(t, "secret123")
+	probe := NewServer(ws_cfg(ws), ws_daemon(ws), ws_state(ws), ws_configPath(ws), ws_statePath(ws))
+	probe.Reload(ws_cfg(ws))
 	mux := http.NewServeMux()
-	ws.registerRoutes(mux)
-	handler := ws.authMiddleware(mux)
+	probe.RegisterForTest(mux)
+	handler := probe.AuthMiddlewareForTest(mux)
 	req := httptest.NewRequest("GET", "/api/state?token=secret123", nil)
 	rw := httptest.NewRecorder()
 	handler.ServeHTTP(rw, req)
@@ -99,13 +121,16 @@ func TestWebAuthAcceptsQueryToken(t *testing.T) {
 }
 
 func TestWebAuthMissingBearerPrefix(t *testing.T) {
-	// A bare token in the Authorization header (no "Bearer " prefix)
-	// must be rejected. Otherwise an attacker who can set a header
-	// to a known prefix could bypass the bearer semantics.
+	// A bare token in the Authorization header (no "Bearer "
+	// prefix) must be rejected. Otherwise an attacker who can
+	// set a header to a known prefix could bypass the bearer
+	// semantics.
 	ws := newTestWebServer(t, "secret123")
+	probe := NewServer(ws_cfg(ws), ws_daemon(ws), ws_state(ws), ws_configPath(ws), ws_statePath(ws))
+	probe.Reload(ws_cfg(ws))
 	mux := http.NewServeMux()
-	ws.registerRoutes(mux)
-	handler := ws.authMiddleware(mux)
+	probe.RegisterForTest(mux)
+	handler := probe.AuthMiddlewareForTest(mux)
 	req := httptest.NewRequest("GET", "/api/state", nil)
 	req.Header.Set("Authorization", "secret123")
 	rw := httptest.NewRecorder()
@@ -121,7 +146,7 @@ func TestWebStateEndpoint(t *testing.T) {
 	if rw.Code != http.StatusOK {
 		t.Fatalf("got %d, want 200", rw.Code)
 	}
-	var got map[string]*SourceState
+	var got map[string]*state.SourceState
 	if err := json.NewDecoder(rw.Body).Decode(&got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -136,7 +161,7 @@ func TestWebConfigEndpointMasksToken(t *testing.T) {
 	if rw.Code != http.StatusOK {
 		t.Fatalf("got %d, want 200", rw.Code)
 	}
-	var got Config
+	var got config.Config
 	if err := json.NewDecoder(rw.Body).Decode(&got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -151,7 +176,7 @@ func TestWebSourcesGET(t *testing.T) {
 	if rw.Code != http.StatusOK {
 		t.Fatalf("got %d, want 200", rw.Code)
 	}
-	var got []Source
+	var got []source.Source
 	if err := json.NewDecoder(rw.Body).Decode(&got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -167,11 +192,12 @@ func TestWebSourcesPOST(t *testing.T) {
 	if rw.Code != http.StatusCreated {
 		t.Errorf("POST: got %d, want 201", rw.Code)
 	}
-	if got := len(ws.cfg.Sources); got != 3 {
+	cfg := ws_cfg(ws)
+	if got := len(cfg.Sources); got != 3 {
 		t.Errorf("after POST: got %d sources, want 3", got)
 	}
-	if ws.cfg.Sources[2].ID != "gamma" {
-		t.Errorf("appended source ID = %q, want gamma", ws.cfg.Sources[2].ID)
+	if cfg.Sources[2].ID != "gamma" {
+		t.Errorf("appended source ID = %q, want gamma", cfg.Sources[2].ID)
 	}
 }
 
@@ -182,7 +208,7 @@ func TestWebSourcePUT(t *testing.T) {
 	if rw.Code != http.StatusOK {
 		t.Errorf("PUT: got %d, want 200", rw.Code)
 	}
-	for _, s := range ws.cfg.Sources {
+	for _, s := range ws_cfg(ws).Sources {
 		if s.ID == "alpha" && s.Name != "renamed" {
 			t.Errorf("PUT did not update: alpha.Name = %q, want renamed", s.Name)
 		}
@@ -195,10 +221,10 @@ func TestWebSourceDELETE(t *testing.T) {
 	if rw.Code != http.StatusNoContent {
 		t.Errorf("DELETE: got %d, want 204", rw.Code)
 	}
-	if got := len(ws.cfg.Sources); got != 1 {
+	if got := len(ws_cfg(ws).Sources); got != 1 {
 		t.Errorf("after DELETE: got %d sources, want 1", got)
 	}
-	for _, s := range ws.cfg.Sources {
+	for _, s := range ws_cfg(ws).Sources {
 		if s.ID == "alpha" {
 			t.Errorf("alpha should have been removed")
 		}
@@ -215,25 +241,6 @@ func TestWebStartNoOpsWhenTokenEmpty(t *testing.T) {
 	ws.Stop() // should also be safe
 }
 
-func TestWebLoginEndpointRemoved(t *testing.T) {
-	// /api/login was removed: the UI stores the token in
-	// localStorage first, then verifies it via /api/state. A
-	// dedicated /api/login endpoint was redundant. This test is
-	// a sentinel — if you re-add /api/login, update the UI and
-	// add a real test for it.
-	ws := newTestWebServer(t, "secret123")
-	mux := http.NewServeMux()
-	ws.registerRoutes(mux)
-	handler := ws.authMiddleware(mux)
-	req := httptest.NewRequest("GET", "/api/login", nil)
-	req.Header.Set("Authorization", "Bearer secret123")
-	rw := httptest.NewRecorder()
-	handler.ServeHTTP(rw, req)
-	if rw.Code != http.StatusNotFound {
-		t.Errorf("/api/login: got %d, want 404 (endpoint removed)", rw.Code)
-	}
-}
-
 func TestWebSettingsPUT(t *testing.T) {
 	// PUT /api/settings updates the ntfy/check/web blocks and
 	// persists the config to disk. Reload picks up the change
@@ -245,21 +252,21 @@ func TestWebSettingsPUT(t *testing.T) {
 	if rw.Code != http.StatusOK {
 		t.Fatalf("PUT /api/settings: got %d, want 200; body=%s", rw.Code, rw.Body.String())
 	}
-	// In-memory config reflects the change.
-	if ws.cfg.Ntfy.Server != "https://ntfy.example.com" {
-		t.Errorf("Ntfy.Server = %q, want example.com", ws.cfg.Ntfy.Server)
+	cfg := ws_cfg(ws)
+	if cfg.Ntfy.Server != "https://ntfy.example.com" {
+		t.Errorf("Ntfy.Server = %q, want example.com", cfg.Ntfy.Server)
 	}
-	if ws.cfg.Ntfy.Topic != "newtopic" {
-		t.Errorf("Ntfy.Topic = %q, want newtopic", ws.cfg.Ntfy.Topic)
+	if cfg.Ntfy.Topic != "newtopic" {
+		t.Errorf("Ntfy.Topic = %q, want newtopic", cfg.Ntfy.Topic)
 	}
-	if ws.cfg.Check.Interval != "30m" {
-		t.Errorf("Check.Interval = %q, want 30m", ws.cfg.Check.Interval)
+	if cfg.Check.Interval != "30m" {
+		t.Errorf("Check.Interval = %q, want 30m", cfg.Check.Interval)
 	}
-	if ws.cfg.Web.Listen != "127.0.0.1:9090" {
-		t.Errorf("Web.Listen = %q, want 127.0.0.1:9090", ws.cfg.Web.Listen)
+	if cfg.Web.Listen != "127.0.0.1:9090" {
+		t.Errorf("Web.Listen = %q, want 127.0.0.1:9090", cfg.Web.Listen)
 	}
 	// Token in the response is masked.
-	var resp Config
+	var resp config.Config
 	if err := json.Unmarshal(rw.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
@@ -267,9 +274,9 @@ func TestWebSettingsPUT(t *testing.T) {
 		t.Errorf("response Web.Token = %q, want masked", resp.Web.Token)
 	}
 	// On-disk config reflects the change too.
-	diskCfg, err := loadConfig(ws.configPath)
+	diskCfg, err := config.Load(ws_configPath(ws))
 	if err != nil {
-		t.Fatalf("loadConfig after PUT: %v", err)
+		t.Fatalf("config.Load after PUT: %v", err)
 	}
 	if diskCfg.Ntfy.Topic != "newtopic" {
 		t.Errorf("on-disk Ntfy.Topic = %q, want newtopic", diskCfg.Ntfy.Topic)
@@ -294,24 +301,21 @@ func TestWebRotateToken(t *testing.T) {
 	if resp.Token == "oldtoken" {
 		t.Errorf("rotate: token did not change")
 	}
-	// The in-memory token is now the new one.
-	if ws.cfg.Web.Token != resp.Token {
-		t.Errorf("in-memory token = %q, want %q", ws.cfg.Web.Token, resp.Token)
+	cfg := ws_cfg(ws)
+	if cfg.Web.Token != resp.Token {
+		t.Errorf("in-memory token = %q, want %q", cfg.Web.Token, resp.Token)
 	}
-	// The old token is rejected.
 	rw2 := callAuth(ws, "GET", "/api/state", "oldtoken", "")
 	if rw2.Code != http.StatusUnauthorized {
 		t.Errorf("old token after rotate: got %d, want 401", rw2.Code)
 	}
-	// The new token works.
 	rw3 := callAuth(ws, "GET", "/api/state", resp.Token, "")
 	if rw3.Code != http.StatusOK {
 		t.Errorf("new token after rotate: got %d, want 200", rw3.Code)
 	}
-	// The on-disk config reflects the new token.
-	disk, err := loadConfig(ws.configPath)
+	disk, err := config.Load(ws_configPath(ws))
 	if err != nil {
-		t.Fatalf("loadConfig: %v", err)
+		t.Fatalf("config.Load: %v", err)
 	}
 	if disk.Web.Token != resp.Token {
 		t.Errorf("on-disk token = %q, want %q", disk.Web.Token, resp.Token)
@@ -328,19 +332,15 @@ func TestWebSettingsRejectsBadInterval(t *testing.T) {
 }
 
 func TestWebSourcesPOSTPersistsToDisk(t *testing.T) {
-	// POST /api/sources appends to the in-memory list AND writes
-	// the config to disk. After the call, loadConfig should see
-	// the new source.
 	ws := newTestWebServer(t, "secret")
 	body := `{"id":"gamma","name":"gamma","type":"json","url":"https://example.com/g"}`
 	rw := callAuth(ws, "POST", "/api/sources", "secret", body)
 	if rw.Code != http.StatusCreated {
 		t.Fatalf("POST: got %d, want 201; body=%s", rw.Code, rw.Body.String())
 	}
-	// Reload from disk and confirm gamma is there.
-	diskCfg, err := loadConfig(ws.configPath)
+	diskCfg, err := config.Load(ws_configPath(ws))
 	if err != nil {
-		t.Fatalf("loadConfig after POST: %v", err)
+		t.Fatalf("config.Load after POST: %v", err)
 	}
 	found := false
 	for _, s := range diskCfg.Sources {
@@ -360,9 +360,9 @@ func TestWebSourcePUTPersistsToDisk(t *testing.T) {
 	if rw.Code != http.StatusOK {
 		t.Fatalf("PUT: got %d, want 200", rw.Code)
 	}
-	diskCfg, err := loadConfig(ws.configPath)
+	diskCfg, err := config.Load(ws_configPath(ws))
 	if err != nil {
-		t.Fatalf("loadConfig after PUT: %v", err)
+		t.Fatalf("config.Load after PUT: %v", err)
 	}
 	for _, s := range diskCfg.Sources {
 		if s.ID == "alpha" && s.Name != "renamed" {
@@ -377,9 +377,9 @@ func TestWebSourceDELETEPersistsToDisk(t *testing.T) {
 	if rw.Code != http.StatusNoContent {
 		t.Fatalf("DELETE: got %d, want 204", rw.Code)
 	}
-	diskCfg, err := loadConfig(ws.configPath)
+	diskCfg, err := config.Load(ws_configPath(ws))
 	if err != nil {
-		t.Fatalf("loadConfig after DELETE: %v", err)
+		t.Fatalf("config.Load after DELETE: %v", err)
 	}
 	for _, s := range diskCfg.Sources {
 		if s.ID == "alpha" {
@@ -399,7 +399,6 @@ func TestWebSourcesPOSTRejectsDuplicate(t *testing.T) {
 
 func TestWebSourcesPOSTRejectsInvalid(t *testing.T) {
 	ws := newTestWebServer(t, "secret")
-	// json source missing URL.
 	body := `{"id":"bad","name":"bad","type":"json"}`
 	rw := callAuth(ws, "POST", "/api/sources", "secret", body)
 	if rw.Code != http.StatusBadRequest {
@@ -408,8 +407,8 @@ func TestWebSourcesPOSTRejectsInvalid(t *testing.T) {
 }
 
 func TestWebSourcesConcurrentWrites(t *testing.T) {
-	// Multiple concurrent POSTs must not panic and must not lose
-	// any source. Without the writeMu serialization, two
+	// Multiple concurrent POSTs must not panic and must not
+	// lose any source. Without the writeMu serialization, two
 	// handlers appending to the same slice can race and one
 	// will overwrite the other's addition; or an out-of-range
 	// slice operation in a rollback can panic.
@@ -433,50 +432,12 @@ func TestWebSourcesConcurrentWrites(t *testing.T) {
 	for err := range errs {
 		t.Error(err)
 	}
-	// Verify all sources made it to disk.
-	diskCfg, err := loadConfig(ws.configPath)
+	diskCfg, err := config.Load(ws_configPath(ws))
 	if err != nil {
-		t.Fatalf("loadConfig: %v", err)
+		t.Fatalf("config.Load: %v", err)
 	}
 	if got := len(diskCfg.Sources); got != 2+n {
 		t.Errorf("on-disk sources: got %d, want %d (2 initial + %d added)", got, 2+n, n)
-	}
-}
-
-func TestWriteConfigFileRoundTrip(t *testing.T) {
-	// writeConfigFile should produce a file that loadConfig can
-	// parse back, with all fields intact.
-	dir := t.TempDir()
-	path := dir + "/config.toml"
-	cfg := &Config{
-		Ntfy:  NtfyConfig{Server: "https://ntfy.example.com", Topic: "roundtrip"},
-		Check: CheckConfig{Interval: "30m"},
-		Web:   WebConfig{Listen: "127.0.0.1:8080", Token: "tok123"},
-		Sources: []Source{
-			{ID: "a", Name: "a", Type: "json", URL: "https://example.com/a", CheckInterval: "10m"},
-		},
-	}
-	if err := writeConfigFile(path, cfg); err != nil {
-		t.Fatalf("writeConfigFile: %v", err)
-	}
-	got, err := loadConfig(path)
-	if err != nil {
-		t.Fatalf("loadConfig: %v", err)
-	}
-	if got.Ntfy.Topic != "roundtrip" {
-		t.Errorf("round-trip Ntfy.Topic = %q, want roundtrip", got.Ntfy.Topic)
-	}
-	if got.Check.Interval != "30m" {
-		t.Errorf("round-trip Check.Interval = %q, want 30m", got.Check.Interval)
-	}
-	if got.Web.Token != "tok123" {
-		t.Errorf("round-trip Web.Token = %q, want tok123", got.Web.Token)
-	}
-	if len(got.Sources) != 1 || got.Sources[0].ID != "a" {
-		t.Errorf("round-trip Sources = %+v, want one source with ID=a", got.Sources)
-	}
-	if got.Sources[0].CheckInterval != "10m" {
-		t.Errorf("round-trip Sources[0].CheckInterval = %q, want 10m", got.Sources[0].CheckInterval)
 	}
 }
 
@@ -505,22 +466,20 @@ func TestTokenFromRequest(t *testing.T) {
 			if c.header != "" {
 				r.Header.Set("Authorization", c.header)
 			}
-			if got := tokenFromRequest(r); got != c.want {
-				t.Errorf("tokenFromRequest = %q, want %q", got, c.want)
+			if got := TokenFromRequest(r); got != c.want {
+				t.Errorf("TokenFromRequest = %q, want %q", got, c.want)
 			}
 		})
 	}
 }
 
-// keep bytes/json imports used so go vet doesn't complain even
-// if a future refactor drops the last caller.
-var _ = bytes.NewReader
-
 func TestWebServesStaticAssets(t *testing.T) {
 	ws := newTestWebServer(t, "secret123")
+	probe := NewServer(ws_cfg(ws), ws_daemon(ws), ws_state(ws), ws_configPath(ws), ws_statePath(ws))
+	probe.Reload(ws_cfg(ws))
 	mux := http.NewServeMux()
-	ws.registerRoutes(mux)
-	handler := ws.authMiddleware(mux)
+	probe.RegisterForTest(mux)
+	handler := probe.AuthMiddlewareForTest(mux)
 
 	for _, path := range []string{"/", "/style.css", "/app.js"} {
 		t.Run(path, func(t *testing.T) {
@@ -539,15 +498,18 @@ func TestWebServesStaticAssets(t *testing.T) {
 }
 
 func TestWebStaticAssetsRequireAuth(t *testing.T) {
-	// Static assets are gated by the same auth middleware as the
-	// API: an unauthenticated request to / must be rejected.
-	// Otherwise the login form would be served to anyone who
-	// could see the login form's first paint (which leaks nothing
-	// today, but the rule should hold for the future).
+	// Static assets are gated by the same auth middleware as
+	// the API: an unauthenticated request to / must be
+	// rejected. Otherwise the login form would be served to
+	// anyone who could see the login form's first paint
+	// (which leaks nothing today, but the rule should hold
+	// for the future).
 	ws := newTestWebServer(t, "secret123")
+	probe := NewServer(ws_cfg(ws), ws_daemon(ws), ws_state(ws), ws_configPath(ws), ws_statePath(ws))
+	probe.Reload(ws_cfg(ws))
 	mux := http.NewServeMux()
-	ws.registerRoutes(mux)
-	handler := ws.authMiddleware(mux)
+	probe.RegisterForTest(mux)
+	handler := probe.AuthMiddlewareForTest(mux)
 	req := httptest.NewRequest("GET", "/", nil)
 	rw := httptest.NewRecorder()
 	handler.ServeHTTP(rw, req)

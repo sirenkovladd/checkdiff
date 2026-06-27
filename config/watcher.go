@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"context"
@@ -27,7 +27,7 @@ type configWatcher struct {
 	onChange func()
 }
 
-func newConfigWatcher(path string, onChange func()) *configWatcher {
+func NewWatcher(path string, onChange func()) *configWatcher {
 	return &configWatcher{path: path, onChange: onChange}
 }
 

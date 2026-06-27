@@ -1,4 +1,4 @@
-package main
+package source
 
 import (
 	"encoding/json"
@@ -44,12 +44,12 @@ func TestParseJSONPath(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, err := parseJSONPath(c.in)
+			got, err := ParseJSONPath(c.in)
 			if err != nil {
-				t.Fatalf("parseJSONPath(%q) error: %v", c.in, err)
+				t.Fatalf("ParseJSONPath(%q) error: %v", c.in, err)
 			}
 			if !reflect.DeepEqual(got, c.want) {
-				t.Errorf("parseJSONPath(%q) = %+v, want %+v", c.in, got, c.want)
+				t.Errorf("ParseJSONPath(%q) = %+v, want %+v", c.in, got, c.want)
 			}
 		})
 	}
@@ -68,9 +68,9 @@ func TestParseJSONPathErrors(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, err := parseJSONPath(c.in)
+			_, err := ParseJSONPath(c.in)
 			if err == nil {
-				t.Errorf("parseJSONPath(%q) = nil error, want error", c.in)
+				t.Errorf("ParseJSONPath(%q) = nil error, want error", c.in)
 			}
 		})
 	}
@@ -95,30 +95,30 @@ func TestExtractJSONArrayPathGrammar(t *testing.T) {
 	}`)
 
 	// Full path with array index — the new grammar.
-	got, err := extractJSONArray(body, "data.valid_tno[0].spath_list")
+	got, err := ExtractJSONArray(body, "data.valid_tno[0].spath_list")
 	if err != nil {
-		t.Fatalf("extractJSONArray with index: %v", err)
+		t.Fatalf("ExtractJSONArray with index: %v", err)
 	}
 	if len(got) != 2 {
-		t.Fatalf("extractJSONArray: got %d items, want 2", len(got))
+		t.Fatalf("ExtractJSONArray: got %d items, want 2", len(got))
 	}
 
 	// Old grammar (no index) must still work.
-	got2, err := extractJSONArray(body, "data")
+	got2, err := ExtractJSONArray(body, "data")
 	if err == nil {
-		t.Errorf("extractJSONArray('data') = %d items, want error (data is an object, not an array)", len(got2))
+		t.Errorf("ExtractJSONArray('data') = %d items, want error (data is an object, not an array)", len(got2))
 	}
 
 	// Index out of range.
-	_, err = extractJSONArray(body, "data.valid_tno[5].spath_list")
+	_, err = ExtractJSONArray(body, "data.valid_tno[5].spath_list")
 	if err == nil {
-		t.Errorf("extractJSONArray with out-of-range index: got nil error, want error")
+		t.Errorf("ExtractJSONArray with out-of-range index: got nil error, want error")
 	}
 
 	// Index into an object should error, not panic.
-	_, err = extractJSONArray(body, "data[0]")
+	_, err = ExtractJSONArray(body, "data[0]")
 	if err == nil {
-		t.Errorf("extractJSONArray with index on object: got nil error, want error")
+		t.Errorf("ExtractJSONArray with index on object: got nil error, want error")
 	}
 }
 

@@ -1,4 +1,4 @@
-package main
+package template
 
 import (
 	"regexp"
@@ -74,17 +74,17 @@ func TestRenderURL(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := renderURL(c.in, now)
+			got := Render(c.in, now)
 			// The UUID test verifies the format separately; the
 			// expected literal is empty for that case.
 			if c.want == "" {
 				if !strings.HasPrefix(got, "https://example.com/api?id=") {
-					t.Errorf("renderURL(%q) = %q, want URL prefix", c.in, got)
+					t.Errorf("Render(%q) = %q, want URL prefix", c.in, got)
 				}
 				return
 			}
 			if got != c.want {
-				t.Errorf("renderURL(%q) = %q, want %q", c.in, got, c.want)
+				t.Errorf("Render(%q) = %q, want %q", c.in, got, c.want)
 			}
 		})
 	}
@@ -96,10 +96,10 @@ func TestRenderURLAllSubstitutionsSeeSameTimestamp(t *testing.T) {
 	// (UUID is excluded: it's a fresh value per call by design.)
 	now := time.Unix(1700000000, 0).UTC()
 	in := "{{.Unix}}|{{.UnixMilli}}|{{.ISO}}|{{.Date}}"
-	got := renderURL(in, now)
+	got := Render(in, now)
 	for _, part := range strings.Split(got, "|") {
 		if part == "" {
-			t.Errorf("renderURL left an empty segment: %q", got)
+			t.Errorf("Render left an empty segment: %q", got)
 		}
 	}
 }
@@ -108,12 +108,35 @@ func TestRenderURLUUIDIsFresh(t *testing.T) {
 	// {{.UUID}} must produce a different value on every call —
 	// it's used to bust caches that key on the URL alone.
 	in := "https://example.com/api?id={{.UUID}}"
-	a := renderURL(in, time.Unix(1700000000, 0).UTC())
-	b := renderURL(in, time.Unix(1700000000, 0).UTC())
+	a := Render(in, time.Unix(1700000000, 0).UTC())
+	b := Render(in, time.Unix(1700000000, 0).UTC())
 	if a == b {
 		t.Errorf("two renders of {{.UUID}} produced the same value: %q", a)
 	}
 	if !regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`).MatchString(strings.TrimPrefix(a, "https://example.com/api?id=")) {
 		t.Errorf("{{.UUID}} substitution did not look like a UUID: %q", a)
+	}
+}
+
+// TestRenderLongestPlaceholderWins pins the invariant that
+// protects against a future placeholder being a prefix of an
+// existing one (e.g. {{.U}} or {{.DateX}}). When two
+// placeholders could match at a given cursor, the longer one
+// must win; otherwise the shorter match leaves trailing
+// characters as garbage. The current placeholder set happens
+// to be disjoint, so this test would fail the moment a
+// prefix-related placeholder was added — which is exactly the
+// regression it's designed to catch.
+func TestRenderLongestPlaceholderWins(t *testing.T) {
+	// Sanity check: {{.UnixMilli}} and {{.Unix}} both start
+	// with {{.Unix, so a naive (shortest-first) scan would
+	// match {{.Unix}} and leave "Milli}}" as garbage. The
+	// longest-first scan must pick {{.UnixMilli}}.
+	now := time.Unix(1700000000, 0).UTC()
+	in := "x={{.UnixMilli}}"
+	got := Render(in, now)
+	want := "x=1700000000000"
+	if got != want {
+		t.Errorf("Render(%q) = %q, want %q (longer placeholder should win)", in, got, want)
 	}
 }

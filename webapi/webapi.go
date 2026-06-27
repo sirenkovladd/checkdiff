@@ -1,43 +1,41 @@
-package main
+// Package webapi is the HTTP surface for the daemon. It serves
+// the JSON API and the static web UI from the webui package.
+// Auth is enforced by a middleware that checks a token
+// supplied via the Authorization header or a ?token= query
+// parameter. When the token is empty, the server does not
+// start (the daemon still runs sources; only the HTTP surface
+// is disabled).
+//
+// Concurrent access to the in-memory config is serialized by
+// the server's RWMutex: read handlers take RLock; write
+// handlers take Lock.
+package webapi
 
 import (
 	"context"
-	"embed"
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"log"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	"checkdiff/config"
+	"checkdiff/daemon"
+	"checkdiff/schedule"
+	"checkdiff/source"
+	"checkdiff/state"
+	"checkdiff/webui"
 )
 
-//go:embed web/*.html web/*.css web/*.js
-var webAssets embed.FS
-
-// webServer is the HTTP surface for the daemon. It serves the JSON
-// API and the static web UI. Auth is enforced by a middleware that
-// checks a token supplied via the Authorization header or a
-// ?token= query parameter. When the token is empty, the server
-// does not start (the daemon still runs sources; only the HTTP
-// surface is disabled).
-//
-// The server has access to the on-disk paths of the config and
-// state files so mutating API endpoints can persist their changes
-// to TOML. The fsnotify watcher (in main.go) picks up the
-// rewritten TOML and triggers a daemon Reload, so the new
-// configuration takes effect automatically.
-//
-// Concurrent access to the in-memory config is serialized by mu
-// (an RWMutex): read handlers (GET /api/sources, GET /api/config)
-// take RLock; write handlers (POST/PUT/DELETE /api/sources, PUT
-// /api/settings) take Lock. Without this, a GET racing a POST
-// can read a torn slice.
-type webServer struct {
-	cfg        *Config
-	daemon     *daemon
-	state      *State
+// Server is the HTTP surface. Construct with NewServer; call
+// Start to bind, Reload to swap in a new config, Stop to
+// shutdown.
+type Server struct {
+	cfg        *config.Config
+	daemon     *daemon.Daemon
+	state      *state.State
 	configPath string
 	statePath  string
 	token      string
@@ -47,8 +45,12 @@ type webServer struct {
 	running    bool
 }
 
-func newWebServer(cfg *Config, d *daemon, st *State, configPath, statePath string) *webServer {
-	return &webServer{
+// NewServer constructs a Server. The configPath and statePath
+// are stored so mutating API endpoints can persist their
+// changes to disk; the fsnotify watcher in main.go picks up
+// the rewritten TOML and triggers a daemon.Reload.
+func NewServer(cfg *config.Config, d *daemon.Daemon, st *state.State, configPath, statePath string) *Server {
+	return &Server{
 		cfg:        cfg,
 		daemon:     d,
 		state:      st,
@@ -59,12 +61,12 @@ func newWebServer(cfg *Config, d *daemon, st *State, configPath, statePath strin
 	}
 }
 
-// authMiddleware checks that the request carries the configured
-// token, either as an Authorization: Bearer header or as a
-// ?token= query parameter. On mismatch it returns 401. The static
-// UI assets are also gated so the login form can't be bypassed
-// by navigating directly to /.
-func (w *webServer) authMiddleware(next http.Handler) http.Handler {
+// authMiddleware checks that the request carries the
+// configured token, either as an Authorization: Bearer header
+// or as a ?token= query parameter. On mismatch it returns 401.
+// The static UI assets are also gated so the login form can't
+// be bypassed by navigating directly to /.
+func (w *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		token := tokenFromRequest(r)
 		w.mu.RLock()
@@ -88,10 +90,10 @@ func tokenFromRequest(r *http.Request) string {
 	return r.URL.Query().Get("token")
 }
 
-// Start binds the HTTP server and begins serving. It returns an
-// error if the bind fails. If the token is empty, Start is a
-// no-op (the web server is disabled by config).
-func (w *webServer) Start() error {
+// Start binds the HTTP server and begins serving. It returns
+// an error if the bind fails. If the token is empty, Start is
+// a no-op (the web server is disabled by config).
+func (w *Server) Start() error {
 	w.mu.Lock()
 	if w.token == "" {
 		w.mu.Unlock()
@@ -108,7 +110,7 @@ func (w *webServer) Start() error {
 
 // bind is the actual server-binding logic, shared by Start and
 // Reload (when the listen address changes).
-func (w *webServer) bind() error {
+func (w *Server) bind() error {
 	w.mu.RLock()
 	listen := w.listen
 	w.mu.RUnlock()
@@ -129,8 +131,8 @@ func (w *webServer) bind() error {
 
 	log.Printf("web server listening on %s", listen)
 	// ListenAndServe blocks; run it in a goroutine so Start
-	// returns immediately. The caller is expected to call Stop
-	// on shutdown.
+	// returns immediately. The caller is expected to call
+	// Stop on shutdown.
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("web server: %v", err)
@@ -142,14 +144,14 @@ func (w *webServer) bind() error {
 	return nil
 }
 
-// Reload picks up the new config's token and listen address. The
-// token change takes effect immediately (the next request is
-// checked against the new token); the listen address change
-// requires a graceful HTTP server restart.
+// Reload picks up the new config's token and listen address.
+// The token change takes effect immediately (the next request
+// is checked against the new token); the listen address
+// change requires a graceful HTTP server restart.
 //
-// If the listen address hasn't changed, this is a no-op for the
-// HTTP server itself; we just update the in-memory token.
-func (w *webServer) Reload(newCfg *Config) {
+// If the listen address hasn't changed, this is a no-op for
+// the HTTP server itself; we just update the in-memory token.
+func (w *Server) Reload(newCfg *config.Config) {
 	w.mu.Lock()
 	oldListen := w.listen
 	oldToken := w.token
@@ -164,10 +166,10 @@ func (w *webServer) Reload(newCfg *Config) {
 		return
 	}
 	if oldToken != w.token {
-		// Token changed (likely via the Settings UI). Subsequent
-		// requests will be checked against the new token; the
-		// user's browser may 401 once until the UI updates
-		// localStorage with the new value.
+		// Token changed (likely via the Settings UI).
+		// Subsequent requests will be checked against the new
+		// token; the user's browser may 401 once until the
+		// UI updates localStorage with the new value.
 		log.Printf("web token rotated")
 	}
 	if newCfg.Web.Listen != oldListen {
@@ -180,9 +182,9 @@ func (w *webServer) Reload(newCfg *Config) {
 	}
 }
 
-// Stop gracefully shuts down the HTTP server. It is a no-op if
-// the server was never started.
-func (w *webServer) Stop() {
+// Stop gracefully shuts down the HTTP server. It is a no-op
+// if the server was never started.
+func (w *Server) Stop() {
 	w.mu.Lock()
 	srv := w.srv
 	w.srv = nil
@@ -200,9 +202,8 @@ func (w *webServer) Stop() {
 
 // registerRoutes wires the API endpoints and the static UI
 // assets into the mux. The static assets are served from the
-// embedded web/ directory so the binary is self-contained
-// (no separate files to deploy).
-func (w *webServer) registerRoutes(mux *http.ServeMux) {
+// webui package so the binary is self-contained.
+func (w *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/state", w.handleState)
 	mux.HandleFunc("/api/config", w.handleConfig)
 	mux.HandleFunc("/api/sources", w.handleSources)
@@ -213,16 +214,11 @@ func (w *webServer) registerRoutes(mux *http.ServeMux) {
 	// Static UI assets. We expose them at / so the user only
 	// needs to remember the listen address. /api/... takes
 	// precedence because it's registered first.
-	sub, err := fs.Sub(webAssets, "web")
-	if err != nil {
-		log.Printf("web: embed sub: %v", err)
-		return
-	}
-	mux.Handle("/", http.FileServer(http.FS(sub)))
+	mux.Handle("/", http.FileServer(http.FS(webui.FS())))
 }
 
 // handleState returns the per-source runtime state. Read-only.
-func (w *webServer) handleState(rw http.ResponseWriter, r *http.Request) {
+func (w *Server) handleState(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -233,7 +229,7 @@ func (w *webServer) handleState(rw http.ResponseWriter, r *http.Request) {
 // handleConfig returns the current config with the web token
 // masked (so a leaked state response can't be used to extract
 // the secret). Read-only; use PUT /api/settings to modify.
-func (w *webServer) handleConfig(rw http.ResponseWriter, r *http.Request) {
+func (w *Server) handleConfig(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -245,36 +241,38 @@ func (w *webServer) handleConfig(rw http.ResponseWriter, r *http.Request) {
 	writeJSON(rw, masked)
 }
 
-// handleSources lists or creates sources. GET returns the current
-// source list; POST appends a new source. Both paths write the
-// config to disk; the fsnotify watcher in main.go picks up the
-// change and calls daemon.Reload, which starts a runner for the
-// new source.
-func (w *webServer) handleSources(rw http.ResponseWriter, r *http.Request) {
+// handleSources lists or creates sources. GET returns the
+// current source list; POST appends a new source. Both paths
+// write the config to disk; the fsnotify watcher in main.go
+// picks up the change and calls daemon.Reload, which starts a
+// runner for the new source.
+func (w *Server) handleSources(rw http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		w.mu.RLock()
-		out := make([]Source, len(w.cfg.Sources))
+		out := make([]source.Source, len(w.cfg.Sources))
 		copy(out, w.cfg.Sources)
 		w.mu.RUnlock()
 		writeJSON(rw, out)
 	case http.MethodPost:
-		var src Source
+		var src source.Source
 		if err := json.NewDecoder(r.Body).Decode(&src); err != nil {
 			http.Error(rw, fmt.Sprintf("decode: %v", err), http.StatusBadRequest)
 			return
 		}
 		// Validate before committing: a malformed source would
-		// otherwise be written to TOML and trigger a load error
-		// on the next reload, breaking all other sources.
-		if err := validateSource(&src); err != nil {
+		// otherwise be written to TOML and trigger a load
+		// error on the next reload, breaking all other
+		// sources.
+		if err := source.Validate(&src); err != nil {
 			http.Error(rw, fmt.Sprintf("validate: %v", err), http.StatusBadRequest)
 			return
 		}
 		w.mu.Lock()
-		// ID must be unique. The TOML parser doesn't enforce this
-		// in the runtime API; we check here so the user gets a
-		// clear 400 instead of a confusing reload error.
+		// ID must be unique. The TOML parser doesn't enforce
+		// this in the runtime API; we check here so the user
+		// gets a clear 400 instead of a confusing reload
+		// error.
 		for _, existing := range w.cfg.Sources {
 			if existing.ID == src.ID {
 				w.mu.Unlock()
@@ -283,9 +281,9 @@ func (w *webServer) handleSources(rw http.ResponseWriter, r *http.Request) {
 			}
 		}
 		w.cfg.Sources = append(w.cfg.Sources, src)
-		if err := writeConfigFile(w.configPath, w.cfg); err != nil {
-			// Roll back in-memory state so the UI doesn't show
-			// a source that wasn't persisted.
+		if err := config.WriteFile(w.configPath, w.cfg); err != nil {
+			// Roll back in-memory state so the UI doesn't
+			// show a source that wasn't persisted.
 			w.cfg.Sources = w.cfg.Sources[:len(w.cfg.Sources)-1]
 			w.mu.Unlock()
 			http.Error(rw, fmt.Sprintf("write config: %v", err), http.StatusInternalServerError)
@@ -300,21 +298,23 @@ func (w *webServer) handleSources(rw http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleSourceByID routes the various /api/sources/{id}[/*] paths.
-// It supports:
-//   POST   /api/sources/{id}/run  - trigger an immediate check
-//   PUT    /api/sources/{id}      - replace this source's config
-//   DELETE /api/sources/{id}      - remove this source
+// handleSourceByID routes the various /api/sources/{id}[/*]
+// paths. It supports:
 //
-// Run-now is non-blocking: it sends to the source's runNowCh and
-// returns 202 immediately. If a run is already pending, the
-// request is silently coalesced (the running check covers it).
+//	POST   /api/sources/{id}/run  - trigger an immediate check
+//	PUT    /api/sources/{id}      - replace this source's config
+//	DELETE /api/sources/{id}      - remove this source
+//
+// Run-now is non-blocking: it sends to the source's runNowCh
+// and returns 202 immediately. If a run is already pending,
+// the request is silently coalesced (the running check covers
+// it).
 //
 // PUT and DELETE write the new config to disk; the fsnotify
 // watcher triggers a daemon.Reload, which cancels the old
 // runner (preserving state) and starts a new one with the new
 // config.
-func (w *webServer) handleSourceByID(rw http.ResponseWriter, r *http.Request) {
+func (w *Server) handleSourceByID(rw http.ResponseWriter, r *http.Request) {
 	id := r.URL.Path[len("/api/sources/"):]
 	if id == "" {
 		http.NotFound(rw, r)
@@ -336,18 +336,18 @@ func (w *webServer) handleSourceByID(rw http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodPut:
-		var src Source
+		var src source.Source
 		if err := json.NewDecoder(r.Body).Decode(&src); err != nil {
 			http.Error(rw, fmt.Sprintf("decode: %v", err), http.StatusBadRequest)
 			return
 		}
-		if err := validateSource(&src); err != nil {
+		if err := source.Validate(&src); err != nil {
 			http.Error(rw, fmt.Sprintf("validate: %v", err), http.StatusBadRequest)
 			return
 		}
 		// Find and replace. The ID in the URL is authoritative
-		// (the body's id field is ignored if it differs, to avoid
-		// the URL/Body desync footgun).
+		// (the body's id field is ignored if it differs, to
+		// avoid the URL/Body desync footgun).
 		src.ID = id
 		w.mu.Lock()
 		found := false
@@ -355,7 +355,7 @@ func (w *webServer) handleSourceByID(rw http.ResponseWriter, r *http.Request) {
 			if w.cfg.Sources[i].ID == id {
 				old := w.cfg.Sources[i]
 				w.cfg.Sources[i] = src
-				if err := writeConfigFile(w.configPath, w.cfg); err != nil {
+				if err := config.WriteFile(w.configPath, w.cfg); err != nil {
 					// Roll back.
 					w.cfg.Sources[i] = old
 					w.mu.Unlock()
@@ -388,9 +388,9 @@ func (w *webServer) handleSourceByID(rw http.ResponseWriter, r *http.Request) {
 		}
 		old := w.cfg.Sources[found]
 		w.cfg.Sources = append(w.cfg.Sources[:found], w.cfg.Sources[found+1:]...)
-		if err := writeConfigFile(w.configPath, w.cfg); err != nil {
+		if err := config.WriteFile(w.configPath, w.cfg); err != nil {
 			// Roll back.
-			w.cfg.Sources = append(w.cfg.Sources[:found], append([]Source{old}, w.cfg.Sources[found:]...)...)
+			w.cfg.Sources = append(w.cfg.Sources[:found], append([]source.Source{old}, w.cfg.Sources[found:]...)...)
 			w.mu.Unlock()
 			http.Error(rw, fmt.Sprintf("write config: %v", err), http.StatusInternalServerError)
 			return
@@ -402,36 +402,37 @@ func (w *webServer) handleSourceByID(rw http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// settingsBody is the request body for PUT /api/settings. Each
-// field is optional; only the supplied blocks are updated.
+// settingsBody is the request body for PUT /api/settings.
+// Each field is optional; only the supplied blocks are
+// updated.
 type settingsBody struct {
-	Ntfy  *NtfyConfig  `json:"ntfy,omitempty"`
-	Check *CheckConfig `json:"check,omitempty"`
-	Web   *WebConfig   `json:"web,omitempty"`
+	Ntfy  *config.NtfyConfig  `json:"ntfy,omitempty"`
+	Check *config.CheckConfig `json:"check,omitempty"`
+	Web   *config.WebConfig   `json:"web,omitempty"`
 }
 
-// handleRotateToken generates a new random token, writes it to
-// the config file, updates the in-memory token, and returns the
-// new value to the caller (the web UI, which then stores it in
-// localStorage). The old token is invalidated immediately: the
-// next request from any client that still has the old token
-// will get 401.
+// handleRotateToken generates a new random token, writes it
+// to the config file, updates the in-memory token, and
+// returns the new value to the caller (the web UI, which then
+// stores it in localStorage). The old token is invalidated
+// immediately: the next request from any client that still
+// has the old token will get 401.
 //
 // POST /api/rotate-token — body is empty; response is
 // {"token": "<new>"} as JSON.
-func (w *webServer) handleRotateToken(rw http.ResponseWriter, r *http.Request) {
+func (w *Server) handleRotateToken(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	tok, err := generateToken()
+	tok, err := config.GenerateToken()
 	if err != nil {
 		http.Error(rw, fmt.Sprintf("generate token: %v", err), http.StatusInternalServerError)
 		return
 	}
 	w.mu.Lock()
 	w.cfg.Web.Token = tok
-	if err := writeConfigFile(w.configPath, w.cfg); err != nil {
+	if err := config.WriteFile(w.configPath, w.cfg); err != nil {
 		w.mu.Unlock()
 		http.Error(rw, fmt.Sprintf("write config: %v", err), http.StatusInternalServerError)
 		return
@@ -442,17 +443,19 @@ func (w *webServer) handleRotateToken(rw http.ResponseWriter, r *http.Request) {
 }
 
 // handleSettings updates the ntfy / check / web blocks in the
-// config. Each block is optional; only supplied fields override
-// the current values. The new config is written to disk; the
-// fsnotify watcher triggers a daemon.Reload and a webServer.Reload.
+// config. Each block is optional; only supplied fields
+// override the current values. The new config is written to
+// disk; the fsnotify watcher triggers a daemon.Reload and a
+// Server.Reload.
 //
-// The web token and listen address are picked up immediately by
-// the web server's Reload. ntfy settings are picked up by the
-// daemon's Reload (which updates the shared ntfy client).
-// Changes to [check].check_interval only affect sources that
-// don't set their own per-source interval, and only on the next
-// reload (existing runners keep their cached intervalFn).
-func (w *webServer) handleSettings(rw http.ResponseWriter, r *http.Request) {
+// The web token and listen address are picked up immediately
+// by the web server's Reload. ntfy settings are picked up by
+// the daemon's Reload (which updates the shared ntfy client
+// via notify.Client.Update). Changes to
+// [check].check_interval only affect sources that don't set
+// their own per-source interval, and only on the next reload
+// (existing runners keep their cached intervalFn).
+func (w *Server) handleSettings(rw http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
 		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -462,9 +465,9 @@ func (w *webServer) handleSettings(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, fmt.Sprintf("decode: %v", err), http.StatusBadRequest)
 		return
 	}
-	// Held throughout: the lock is a writer lock because we're
-	// mutating the in-memory config (and serializing against
-	// other writers to the same file).
+	// Held throughout: the lock is a writer lock because
+	// we're mutating the in-memory config (and serializing
+	// against other writers to the same file).
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if body.Ntfy != nil {
@@ -477,7 +480,7 @@ func (w *webServer) handleSettings(rw http.ResponseWriter, r *http.Request) {
 	}
 	if body.Check != nil {
 		if body.Check.Interval != "" {
-			if _, err := parseInterval(body.Check.Interval); err != nil {
+			if _, err := schedule.Parse(body.Check.Interval); err != nil {
 				http.Error(rw, fmt.Sprintf("check.check_interval: %v", err), http.StatusBadRequest)
 				return
 			}
@@ -488,46 +491,60 @@ func (w *webServer) handleSettings(rw http.ResponseWriter, r *http.Request) {
 		if body.Web.Listen != "" {
 			w.cfg.Web.Listen = body.Web.Listen
 		}
-		// Token may legitimately be the empty string (the user
-		// wants to disable the web UI). Update unconditionally
-		// when the field is present in the request. The
-		// settings form is responsible for distinguishing
-		// "user typed a new value" from "user left it blank to
-		// keep the current one" (the JS only sends the field
-		// when the user types something).
+		// Token may legitimately be the empty string (the
+		// user wants to disable the web UI). Update
+		// unconditionally when the field is present in the
+		// request. The settings form is responsible for
+		// distinguishing "user typed a new value" from "user
+		// left it blank to keep the current one" (the JS
+		// only sends the field when the user types
+		// something).
 		w.cfg.Web.Token = body.Web.Token
 	}
-	if err := writeConfigFile(w.configPath, w.cfg); err != nil {
+	if err := config.WriteFile(w.configPath, w.cfg); err != nil {
 		http.Error(rw, fmt.Sprintf("write config: %v", err), http.StatusInternalServerError)
 		return
 	}
-	// Return the (now-updated) config with the token masked, so
-	// the UI can refresh its local copy in one round-trip.
+	// Return the (now-updated) config with the token masked,
+	// so the UI can refresh its local copy in one round-trip.
 	masked := *w.cfg
 	masked.Web.Token = "****"
 	writeJSON(rw, masked)
-}
-
-// writeConfigFile persists the in-memory config to disk atomically
-// (write to .tmp, fsync, rename). The fsnotify watcher in main.go
-// will pick up the change and call daemon.Reload + webServer.Reload.
-//
-// All mutating API endpoints (handleSources, handleSourceByID,
-// handleSettings) route through this helper so the on-disk
-// config is the single source of truth.
-func writeConfigFile(path string, cfg *Config) error {
-	b, err := marshalConfig(cfg)
-	if err != nil {
-		return fmt.Errorf("marshal config: %w", err)
-	}
-	tmp := path + ".tmp"
-	if err := writeFileAtomic(tmp, path, b, 0o644); err != nil {
-		return err
-	}
-	return nil
 }
 
 func writeJSON(rw http.ResponseWriter, v any) {
 	rw.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(rw).Encode(v)
 }
+
+// --- Test helpers (exported because the test file is in the
+// same package). Kept here so the production file stays
+// focused on the server's public API. ---
+
+// ConfigForTest returns the current in-memory config.
+func (w *Server) ConfigForTest() *config.Config { return w.cfg }
+
+// DaemonForTest returns the daemon reference.
+func (w *Server) DaemonForTest() *daemon.Daemon { return w.daemon }
+
+// StateForTest returns the state reference.
+func (w *Server) StateForTest() *state.State { return w.state }
+
+// ConfigPathForTest returns the on-disk config path.
+func (w *Server) ConfigPathForTest() string { return w.configPath }
+
+// StatePathForTest returns the on-disk state path.
+func (w *Server) StatePathForTest() string { return w.statePath }
+
+// RegisterForTest wires routes into mux (for httptest use
+// without going through Start).
+func (w *Server) RegisterForTest(mux *http.ServeMux) { w.registerRoutes(mux) }
+
+// AuthMiddlewareForTest returns the auth-wrapped handler.
+func (w *Server) AuthMiddlewareForTest(next http.Handler) http.Handler {
+	return w.authMiddleware(next)
+}
+
+// TokenFromRequest is the package-level version of the private
+// helper, exposed for tests.
+func TokenFromRequest(r *http.Request) string { return tokenFromRequest(r) }

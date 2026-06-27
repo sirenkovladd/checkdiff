@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"crypto/rand"
@@ -21,7 +21,7 @@ import (
 // reads). A separate function makes the policy explicit:
 // auto-generation happens in daemon mode only, with a clear
 // log line, and is the first thing the daemon does.
-func ensureConfigForDaemon(path string) error {
+func EnsureForDaemon(path string) error {
 	if _, err := os.Stat(path); err == nil {
 		// Config exists; nothing to do.
 		return nil
@@ -29,7 +29,7 @@ func ensureConfigForDaemon(path string) error {
 		return fmt.Errorf("stat config: %w", err)
 	}
 
-	token, err := generateToken()
+	token, err := GenerateToken()
 	if err != nil {
 		return fmt.Errorf("generate token: %w", err)
 	}
@@ -51,10 +51,11 @@ func ensureConfigForDaemon(path string) error {
 	return nil
 }
 
-// generateToken returns 32 random bytes encoded as base64url
+// GenerateToken returns 32 random bytes encoded as base64url
 // (no padding). 32 bytes = 256 bits of entropy, more than
-// enough for a shared secret on a private network.
-func generateToken() (string, error) {
+// enough for a shared secret on a private network. Exported so
+// the webapi package can rotate the token via /api/rotate-token.
+func GenerateToken() (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		return "", err

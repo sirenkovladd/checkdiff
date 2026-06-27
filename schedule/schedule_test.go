@@ -1,4 +1,4 @@
-package main
+package schedule
 
 import (
 	"testing"
@@ -7,9 +7,9 @@ import (
 
 func TestParseIntervalDuration(t *testing.T) {
 	// A Go duration string should produce a fixed-interval scheduler.
-	fn, err := parseInterval("30m")
+	fn, err := Parse("30m")
 	if err != nil {
-		t.Fatalf("parseInterval: %v", err)
+		t.Fatalf("Parse: %v", err)
 	}
 	start := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	got := fn(start)
@@ -22,9 +22,9 @@ func TestParseIntervalDuration(t *testing.T) {
 func TestParseIntervalCron(t *testing.T) {
 	// A cron expression with whitespace is parsed as cron.
 	// "*/15 * * * *" fires every 15 minutes past the hour.
-	fn, err := parseInterval("*/15 * * * *")
+	fn, err := Parse("*/15 * * * *")
 	if err != nil {
-		t.Fatalf("parseInterval: %v", err)
+		t.Fatalf("Parse: %v", err)
 	}
 	// From 12:00:00, next firing is 12:15:00.
 	start := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
@@ -40,7 +40,7 @@ func TestParseIntervalCronSixFieldsRejected(t *testing.T) {
 	// only accepts 5 fields. This is the documented behavior —
 	// we don't want a user writing "* * * * * *" to accidentally
 	// schedule per-second runs.
-	if _, err := parseInterval("* * * * * *"); err == nil {
+	if _, err := Parse("* * * * * *"); err == nil {
 		t.Errorf("6-field cron should have been rejected")
 	}
 }
@@ -58,9 +58,9 @@ func TestParseIntervalErrors(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, err := parseInterval(c.in)
+			_, err := Parse(c.in)
 			if err == nil {
-				t.Errorf("parseInterval(%q) = nil error, want error", c.in)
+				t.Errorf("Parse(%q) = nil error, want error", c.in)
 			}
 		})
 	}
@@ -70,7 +70,7 @@ func TestParseIntervalAutoDetect(t *testing.T) {
 	// Whitespace is the disambiguator. A duration like "1h30m"
 	// has no whitespace, so it parses as Go duration even though
 	// it expresses a duration similar to a cron schedule. Note:
-	// sub-minute durations are rejected by parseInterval itself
+	// sub-minute durations are rejected by Parse itself
 	// (see TestParseIntervalErrors), so the duration cases here
 	// are all >= 1 minute.
 	cases := []struct {
@@ -88,9 +88,9 @@ func TestParseIntervalAutoDetect(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			fn, err := parseInterval(c.in)
+			fn, err := Parse(c.in)
 			if err != nil {
-				t.Errorf("parseInterval(%q): %v", c.in, err)
+				t.Errorf("Parse(%q): %v", c.in, err)
 				return
 			}
 			// Sanity: the function should return a time strictly
@@ -98,7 +98,7 @@ func TestParseIntervalAutoDetect(t *testing.T) {
 			start := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 			next := fn(start)
 			if !next.After(start) {
-				t.Errorf("parseInterval(%q): next %v is not after %v", c.in, next, start)
+				t.Errorf("Parse(%q): next %v is not after %v", c.in, next, start)
 			}
 		})
 	}
@@ -106,14 +106,14 @@ func TestParseIntervalAutoDetect(t *testing.T) {
 
 func TestParseIntervalWhitespaceDisambiguator(t *testing.T) {
 	// Whitespace is the disambiguator between Go duration and
-	// cron. parseInterval trims leading/trailing whitespace before
+	// cron. Parse trims leading/trailing whitespace before
 	// checking for inner whitespace, so " 30m " is still a
 	// duration. Inner whitespace (e.g. "0 * * * *") is the cron
 	// signal.
 	cases := []struct {
 		name string
 		in   string
-		// isCron reports what we expect parseInterval to interpret.
+		// isCron reports what we expect Parse to interpret.
 		isCron bool
 	}{
 		{"trimmed cron", "0 * * * *", true},
@@ -121,9 +121,9 @@ func TestParseIntervalWhitespaceDisambiguator(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			fn, err := parseInterval(c.in)
+			fn, err := Parse(c.in)
 			if err != nil {
-				t.Fatalf("parseInterval(%q): %v", c.in, err)
+				t.Fatalf("Parse(%q): %v", c.in, err)
 			}
 			// The two interpretations give different next-run
 			// times for the same start, so we can disambiguate
@@ -133,13 +133,13 @@ func TestParseIntervalWhitespaceDisambiguator(t *testing.T) {
 			if c.isCron {
 				// 0 * * * * from 12:07 → 13:00.
 				if next.Hour() != 13 || next.Minute() != 0 {
-					t.Errorf("parseInterval(%q): expected cron path (13:00), got %v", c.in, next)
+					t.Errorf("Parse(%q): expected cron path (13:00), got %v", c.in, next)
 				}
 			} else {
 				// 30m duration from 12:07 → 12:37.
 				want := start.Add(30 * time.Minute)
 				if !next.Equal(want) {
-					t.Errorf("parseInterval(%q): expected %v, got %v", c.in, want, next)
+					t.Errorf("Parse(%q): expected %v, got %v", c.in, want, next)
 				}
 			}
 		})

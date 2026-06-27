@@ -1,4 +1,11 @@
-package main
+// Package schedule is the seam that lets one source's interval
+// be expressed as either a Go duration ("1h", "30m") or a
+// 5-field cron expression ("0 */6 * * *"). Both code paths
+// converge on intervalFn, a func(time.Time) time.Time that
+// returns the next run time after a given timestamp. The
+// daemon doesn't need to know which format a source uses —
+// only Parse knows, and only at config load time.
+package schedule
 
 import (
 	"fmt"
@@ -15,8 +22,15 @@ import (
 //
 // Both code paths converge on this type so the rest of the daemon
 // doesn't need to know which format a source uses. The schedule
-// parser is the only place the choice is made.
-type intervalFn func(now time.Time) time.Time
+// IntervalFn returns the next run time after `now`. It's the
+// interface the daemon uses to schedule a source's next check,
+// regardless of whether the user's config uses a Go duration
+// or a cron expression.
+//
+// Both code paths converge on this type so the rest of the
+// daemon doesn't need to know which format a source uses. The
+// schedule parser is the only place the choice is made.
+type IntervalFn func(now time.Time) time.Time
 
 // parseInterval parses a scheduling string and returns the
 // intervalFn that produces the next run time after any given
@@ -38,7 +52,7 @@ type intervalFn func(now time.Time) time.Time
 // "* * * * * *" — 6 fields — won't parse as standard 5-field
 // cron, so the user gets a clear error rather than a silent
 // surprise).
-func parseInterval(s string) (intervalFn, error) {
+func Parse(s string) (IntervalFn, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return nil, fmt.Errorf("interval is empty")
