@@ -63,10 +63,32 @@ id             = "bad"
 name           = "bad interval"
 type           = "json"
 url            = "https://example.com/api"
-check_interval = "not-a-duration"
+check_interval = "not-a-duration-or-cron"
 `
 	if _, err := loadConfig(writeConfig(t, body)); err == nil {
 		t.Errorf("loadConfig with invalid per-source interval: got nil error, want error")
+	}
+}
+
+func TestLoadConfigPerSourceIntervalCron(t *testing.T) {
+	// Per-source interval accepts cron expressions. A standard
+	// 5-field cron string should parse without error.
+	body := `
+[ntfy]
+topic = "test"
+
+[check]
+check_interval = "1h"
+
+[[sources]]
+id             = "cron-src"
+name           = "cron source"
+type           = "json"
+url            = "https://example.com/api"
+check_interval = "0 */6 * * *"
+`
+	if _, err := loadConfig(writeConfig(t, body)); err != nil {
+		t.Errorf("loadConfig with cron per-source interval: got %v, want nil", err)
 	}
 }
 
@@ -93,9 +115,12 @@ check_interval = "30s"
 func TestLoadConfigGlobalIntervalStillValidates(t *testing.T) {
 	// Make sure the new per-source field didn't accidentally loosen
 	// the validation on the global [check].check_interval. The
-	// global interval is just checked as a valid Go duration; the
-	// systemd OnCalendar constraints (must divide an hour) are
-	// applied separately by onCalendarFor when -print-timer is used.
+	// global interval is parsed by parseInterval, which accepts any
+	// Go duration (>= 1 minute) or 5-field cron expression. "7m"
+	// is a valid Go duration and divides 60 minutes evenly, so it's
+	// allowed at the config level; the per-source semantics (e.g.
+	// "must divide an hour for systemd") are no longer relevant
+	// since the daemon uses its own ticker/cron scheduler.
 	body := `
 [ntfy]
 topic = "test"

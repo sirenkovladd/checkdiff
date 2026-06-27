@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -27,12 +29,17 @@ func newTestWebServer(t *testing.T, token string) *webServer {
 		Version: currentStateVersion,
 		Sources: map[string]*SourceState{},
 	}, NewNtfyClient("https://ntfy.sh", "test"))
-	return newWebServer(cfg, d, &State{
+	state := &State{
 		Version: currentStateVersion,
 		Sources: map[string]*SourceState{
 			"alpha": {ItemsSeen: map[string]bool{"x": true}, ItemsCount: 1},
 		},
-	})
+	}
+	// newWebServer now takes configPath and statePath so mutating
+	// handlers can persist changes. Tests that don't exercise the
+	// write path use a temp dir.
+	dir := t.TempDir()
+	return newWebServer(cfg, d, state, dir+"/config.toml", dir+"/state.json")
 }
 
 // callAuth is a test helper that hits a path on the auth-wrapped
@@ -208,6 +215,237 @@ func TestWebStartNoOpsWhenTokenEmpty(t *testing.T) {
 	ws.Stop() // should also be safe
 }
 
+func TestWebLoginEndpoint(t *testing.T) {
+	// /api/login returns 200 on a matching token and 401 on a
+	// missing/wrong one. Used by the web UI to verify the token
+	// before storing it in localStorage.
+	ws := newTestWebServer(t, "secret123")
+	mux := http.NewServeMux()
+	ws.registerRoutes(mux)
+	handler := ws.authMiddleware(mux)
+
+	// No auth → 401.
+	req := httptest.NewRequest("GET", "/api/login", nil)
+	rw := httptest.NewRecorder()
+	handler.ServeHTTP(rw, req)
+	if rw.Code != http.StatusUnauthorized {
+		t.Errorf("no auth: got %d, want 401", rw.Code)
+	}
+
+	// Right auth → 200.
+	req = httptest.NewRequest("GET", "/api/login", nil)
+	req.Header.Set("Authorization", "Bearer secret123")
+	rw = httptest.NewRecorder()
+	handler.ServeHTTP(rw, req)
+	if rw.Code != http.StatusOK {
+		t.Errorf("right auth: got %d, want 200", rw.Code)
+	}
+}
+
+func TestWebSettingsPUT(t *testing.T) {
+	// PUT /api/settings updates the ntfy/check/web blocks and
+	// persists the config to disk. Reload picks up the change
+	// via the fsnotify watcher; in this unit test we just
+	// verify the in-memory and on-disk state.
+	ws := newTestWebServer(t, "oldtoken")
+	body := `{"ntfy":{"server":"https://ntfy.example.com","topic":"newtopic"},"web":{"token":"newtoken","listen":"127.0.0.1:9090"},"check":{"interval":"30m"}}`
+	rw := callAuth(ws, "PUT", "/api/settings", "oldtoken", body)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("PUT /api/settings: got %d, want 200; body=%s", rw.Code, rw.Body.String())
+	}
+	// In-memory config reflects the change.
+	if ws.cfg.Ntfy.Server != "https://ntfy.example.com" {
+		t.Errorf("Ntfy.Server = %q, want example.com", ws.cfg.Ntfy.Server)
+	}
+	if ws.cfg.Ntfy.Topic != "newtopic" {
+		t.Errorf("Ntfy.Topic = %q, want newtopic", ws.cfg.Ntfy.Topic)
+	}
+	if ws.cfg.Check.Interval != "30m" {
+		t.Errorf("Check.Interval = %q, want 30m", ws.cfg.Check.Interval)
+	}
+	if ws.cfg.Web.Listen != "127.0.0.1:9090" {
+		t.Errorf("Web.Listen = %q, want 127.0.0.1:9090", ws.cfg.Web.Listen)
+	}
+	// Token in the response is masked.
+	var resp Config
+	if err := json.Unmarshal(rw.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Web.Token != "****" {
+		t.Errorf("response Web.Token = %q, want masked", resp.Web.Token)
+	}
+	// On-disk config reflects the change too.
+	diskCfg, err := loadConfig(ws.configPath)
+	if err != nil {
+		t.Fatalf("loadConfig after PUT: %v", err)
+	}
+	if diskCfg.Ntfy.Topic != "newtopic" {
+		t.Errorf("on-disk Ntfy.Topic = %q, want newtopic", diskCfg.Ntfy.Topic)
+	}
+}
+
+func TestWebSettingsRejectsBadInterval(t *testing.T) {
+	ws := newTestWebServer(t, "secret")
+	body := `{"check":{"interval":"not-a-duration"}}`
+	rw := callAuth(ws, "PUT", "/api/settings", "secret", body)
+	if rw.Code != http.StatusBadRequest {
+		t.Errorf("bad interval: got %d, want 400", rw.Code)
+	}
+}
+
+func TestWebSourcesPOSTPersistsToDisk(t *testing.T) {
+	// POST /api/sources appends to the in-memory list AND writes
+	// the config to disk. After the call, loadConfig should see
+	// the new source.
+	ws := newTestWebServer(t, "secret")
+	body := `{"id":"gamma","name":"gamma","type":"json","url":"https://example.com/g"}`
+	rw := callAuth(ws, "POST", "/api/sources", "secret", body)
+	if rw.Code != http.StatusCreated {
+		t.Fatalf("POST: got %d, want 201; body=%s", rw.Code, rw.Body.String())
+	}
+	// Reload from disk and confirm gamma is there.
+	diskCfg, err := loadConfig(ws.configPath)
+	if err != nil {
+		t.Fatalf("loadConfig after POST: %v", err)
+	}
+	found := false
+	for _, s := range diskCfg.Sources {
+		if s.ID == "gamma" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("POST did not persist to disk; on-disk sources: %+v", diskCfg.Sources)
+	}
+}
+
+func TestWebSourcePUTPersistsToDisk(t *testing.T) {
+	ws := newTestWebServer(t, "secret")
+	body := `{"id":"alpha","name":"renamed","type":"json","url":"https://example.com/a2"}`
+	rw := callAuth(ws, "PUT", "/api/sources/alpha", "secret", body)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("PUT: got %d, want 200", rw.Code)
+	}
+	diskCfg, err := loadConfig(ws.configPath)
+	if err != nil {
+		t.Fatalf("loadConfig after PUT: %v", err)
+	}
+	for _, s := range diskCfg.Sources {
+		if s.ID == "alpha" && s.Name != "renamed" {
+			t.Errorf("PUT did not persist; on-disk alpha.Name = %q, want renamed", s.Name)
+		}
+	}
+}
+
+func TestWebSourceDELETEPersistsToDisk(t *testing.T) {
+	ws := newTestWebServer(t, "secret")
+	rw := callAuth(ws, "DELETE", "/api/sources/alpha", "secret", "")
+	if rw.Code != http.StatusNoContent {
+		t.Fatalf("DELETE: got %d, want 204", rw.Code)
+	}
+	diskCfg, err := loadConfig(ws.configPath)
+	if err != nil {
+		t.Fatalf("loadConfig after DELETE: %v", err)
+	}
+	for _, s := range diskCfg.Sources {
+		if s.ID == "alpha" {
+			t.Errorf("DELETE did not persist; alpha still on disk")
+		}
+	}
+}
+
+func TestWebSourcesPOSTRejectsDuplicate(t *testing.T) {
+	ws := newTestWebServer(t, "secret")
+	body := `{"id":"alpha","name":"dup","type":"json","url":"https://example.com/x"}`
+	rw := callAuth(ws, "POST", "/api/sources", "secret", body)
+	if rw.Code != http.StatusBadRequest {
+		t.Errorf("duplicate id: got %d, want 400", rw.Code)
+	}
+}
+
+func TestWebSourcesPOSTRejectsInvalid(t *testing.T) {
+	ws := newTestWebServer(t, "secret")
+	// json source missing URL.
+	body := `{"id":"bad","name":"bad","type":"json"}`
+	rw := callAuth(ws, "POST", "/api/sources", "secret", body)
+	if rw.Code != http.StatusBadRequest {
+		t.Errorf("invalid source: got %d, want 400", rw.Code)
+	}
+}
+
+func TestWebSourcesConcurrentWrites(t *testing.T) {
+	// Multiple concurrent POSTs must not panic and must not lose
+	// any source. Without the writeMu serialization, two
+	// handlers appending to the same slice can race and one
+	// will overwrite the other's addition; or an out-of-range
+	// slice operation in a rollback can panic.
+	ws := newTestWebServer(t, "secret")
+	const n = 20
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			body := fmt.Sprintf(`{"id":"src-%d","name":"src %d","type":"json","url":"https://example.com/%d"}`, i, i, i)
+			rw := callAuth(ws, "POST", "/api/sources", "secret", body)
+			if rw.Code != http.StatusCreated {
+				errs <- fmt.Errorf("src-%d: got %d, want 201", i, rw.Code)
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	// Verify all sources made it to disk.
+	diskCfg, err := loadConfig(ws.configPath)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if got := len(diskCfg.Sources); got != 2+n {
+		t.Errorf("on-disk sources: got %d, want %d (2 initial + %d added)", got, 2+n, n)
+	}
+}
+
+func TestWriteConfigFileRoundTrip(t *testing.T) {
+	// writeConfigFile should produce a file that loadConfig can
+	// parse back, with all fields intact.
+	dir := t.TempDir()
+	path := dir + "/config.toml"
+	cfg := &Config{
+		Ntfy:  NtfyConfig{Server: "https://ntfy.example.com", Topic: "roundtrip"},
+		Check: CheckConfig{Interval: "30m"},
+		Web:   WebConfig{Listen: "127.0.0.1:8080", Token: "tok123"},
+		Sources: []Source{
+			{ID: "a", Name: "a", Type: "json", URL: "https://example.com/a", CheckInterval: "10m"},
+		},
+	}
+	if err := writeConfigFile(path, cfg); err != nil {
+		t.Fatalf("writeConfigFile: %v", err)
+	}
+	got, err := loadConfig(path)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if got.Ntfy.Topic != "roundtrip" {
+		t.Errorf("round-trip Ntfy.Topic = %q, want roundtrip", got.Ntfy.Topic)
+	}
+	if got.Check.Interval != "30m" {
+		t.Errorf("round-trip Check.Interval = %q, want 30m", got.Check.Interval)
+	}
+	if got.Web.Token != "tok123" {
+		t.Errorf("round-trip Web.Token = %q, want tok123", got.Web.Token)
+	}
+	if len(got.Sources) != 1 || got.Sources[0].ID != "a" {
+		t.Errorf("round-trip Sources = %+v, want one source with ID=a", got.Sources)
+	}
+	if got.Sources[0].CheckInterval != "10m" {
+		t.Errorf("round-trip Sources[0].CheckInterval = %q, want 10m", got.Sources[0].CheckInterval)
+	}
+}
+
 func TestTokenFromRequest(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -243,7 +481,6 @@ func TestTokenFromRequest(t *testing.T) {
 // keep bytes/json imports used so go vet doesn't complain even
 // if a future refactor drops the last caller.
 var _ = bytes.NewReader
-var _ = json.Marshal
 
 func TestWebServesStaticAssets(t *testing.T) {
 	ws := newTestWebServer(t, "secret123")

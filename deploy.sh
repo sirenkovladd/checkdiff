@@ -27,6 +27,8 @@ LOCAL_SERVICE="contrib/checkdiff.service"
 if [ ! -f "$LOCAL_CONFIG" ]; then
   echo "error: config not found at $LOCAL_CONFIG" >&2
   echo "  pass it as the first arg, or let the daemon generate one on first run." >&2
+  echo "  (run the binary on the target host with no flags — the first-run" >&2
+  echo "   experience auto-generates a config with a random token.)" >&2
   exit 1
 fi
 
@@ -153,5 +155,5 @@ fi
 
 echo "Done! Status:"
 $SSH "systemctl --user status checkdiff.service --no-pager | head -10 && \
-  echo '--- last 5 log lines ---' && \
-  journalctl --user -u checkdiff.service -n 5 --no-pager || true"
+  echo '--- last 10 log lines ---' && \
+  journalctl --user -u checkdiff.service -n 10 --no-pager || true"

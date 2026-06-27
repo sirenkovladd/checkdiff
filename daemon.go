@@ -9,17 +9,16 @@ import (
 )
 
 // daemon is the long-running supervisor that manages one goroutine
-// per enabled source. Each goroutine runs checkOne on a ticker
-// using the source's per-source interval (falling back to the
-// global [check].check_interval).
+// per enabled source. Each goroutine runs checkOne on its own
+// schedule, computed by the source's intervalFn (which handles
+// both fixed Go durations and cron expressions uniformly).
 //
-// The supervisor is intentionally minimal: it owns the goroutines
-// and their cancellation, and nothing more. Config hot-reload and
-// the HTTP server are separate concerns that will be layered on
-// top in later steps.
+// The supervisor owns the goroutines and their cancellation, and
+// nothing more. Config hot-reload is layered on top via Reload;
+// the HTTP server is a separate concern.
 type daemon struct {
-	cfg *Config
-	st  *State
+	cfg  *Config
+	st   *State
 	ntfy *NtfyClient
 
 	// parentCtx is the context passed to Start. It's stored so
@@ -38,14 +37,15 @@ type sourceRunner struct {
 	done   chan struct{}
 	// runNowCh is a buffered channel (size 1) that the web API
 	// handler sends to in order to trigger an immediate check
-	// for this source, bypassing the ticker. The non-blocking
+	// for this source, bypassing the schedule. The non-blocking
 	// send means a second "run now" while a check is in flight
 	// is silently dropped (the running check already covers it).
 	runNowCh chan struct{}
-	// interval is cached at start time so a config reload that
-	// changes the interval only takes effect after the runner
-	// is restarted (cancel + start).
-	interval time.Duration
+	// next computes the next run time after a given timestamp.
+	// Both Go-duration sources and cron-expression sources use
+	// the same interface so the run loop doesn't need to know
+	// which format the source uses.
+	next intervalFn
 }
 
 func newDaemon(cfg *Config, st *State, ntfy *NtfyClient) *daemon {
@@ -58,9 +58,9 @@ func newDaemon(cfg *Config, st *State, ntfy *NtfyClient) *daemon {
 }
 
 // Start launches one goroutine per enabled source. Sources that are
-// disabled (or that don't validate) are skipped. Start is
-// idempotent: calling it twice cancels the first set of runners
-// before starting the second.
+// disabled (or that don't parse) are skipped. Start is idempotent:
+// calling it twice cancels the first set of runners before
+// starting the second.
 func (d *daemon) Start(ctx context.Context) {
 	d.mu.Lock()
 	d.parentCtx = ctx
@@ -75,12 +75,12 @@ func (d *daemon) Start(ctx context.Context) {
 		if !s.IsEnabled() {
 			continue
 		}
-		interval, err := time.ParseDuration(s.ResolvedInterval(d.cfg.Check.Interval))
+		next, err := parseInterval(s.ResolvedInterval(d.cfg.Check.Interval))
 		if err != nil {
 			log.Printf("[%s] invalid interval %q, skipping: %v", s.ID, s.ResolvedInterval(d.cfg.Check.Interval), err)
 			continue
 		}
-		d.startOne(ctx, s, interval)
+		d.startOne(ctx, s, next)
 	}
 }
 
@@ -99,6 +99,14 @@ func (d *daemon) Reload(newCfg *Config) {
 	d.mu.Lock()
 	parent := d.parentCtx
 	d.cfg = newCfg
+	// Pick up the latest ntfy settings so changes via PUT
+	// /api/settings (or by editing the TOML and waiting for
+	// the fsnotify watcher to fire) take effect without a
+	// daemon restart.
+	if d.ntfy != nil {
+		d.ntfy.Server = newCfg.Ntfy.Server
+		d.ntfy.Topic = newCfg.Ntfy.Topic
+	}
 	d.mu.Unlock()
 	if parent == nil {
 		return
@@ -107,13 +115,13 @@ func (d *daemon) Reload(newCfg *Config) {
 }
 
 // startOne spawns a single source's goroutine.
-func (d *daemon) startOne(parent context.Context, s *Source, interval time.Duration) {
+func (d *daemon) startOne(parent context.Context, s *Source, next intervalFn) {
 	ctx, cancel := context.WithCancel(parent)
 	r := &sourceRunner{
 		cancel:   cancel,
 		done:     make(chan struct{}),
 		runNowCh: make(chan struct{}, 1),
-		interval: interval,
+		next:     next,
 	}
 	d.mu.Lock()
 	// If a runner for this source already exists, cancel it first.
@@ -123,34 +131,74 @@ func (d *daemon) startOne(parent context.Context, s *Source, interval time.Durat
 	d.runners[s.ID] = r
 	d.mu.Unlock()
 
-	go d.runSource(ctx, s, r, interval)
+	go d.runSource(ctx, s, r, next)
 }
 
-func (d *daemon) runSource(ctx context.Context, s *Source, r *sourceRunner, interval time.Duration) {
+// runSource is the per-source loop. It uses a time.Timer (not a
+// time.Ticker) so cron expressions with variable intervals are
+// handled correctly: each iteration computes the next run time
+// from the current time.
+func (d *daemon) runSource(ctx context.Context, s *Source, r *sourceRunner, next intervalFn) {
 	defer close(r.done)
 	// Run immediately on start so a freshly-restarted daemon
 	// doesn't wait a full interval before its first check.
-	if err := checkOne(ctx, d.ntfy, d.st, s, interval); err != nil {
-		log.Printf("[%s] check failed: %v", s.ID, err)
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	d.runOnce(ctx, s, r, next)
 	for {
+		now := time.Now()
+		nextRun := next(now)
+		wait := time.Until(nextRun)
+		if wait < 0 {
+			// We're already past the next scheduled time (e.g.
+			// the system was suspended). Fire immediately rather
+			// than burning CPU in a tight loop.
+			wait = 0
+		}
+		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-ticker.C:
-			if err := checkOne(ctx, d.ntfy, d.st, s, interval); err != nil {
-				log.Printf("[%s] check failed: %v", s.ID, err)
-			}
+		case <-timer.C:
+			d.runOnce(ctx, s, r, next)
 		case <-r.runNowCh:
 			// Non-blocking trigger from the web API. The channel
 			// is buffered (size 1) so a second "run now" while
 			// this one is in flight is dropped silently.
-			if err := checkOne(ctx, d.ntfy, d.st, s, interval); err != nil {
-				log.Printf("[%s] check failed: %v", s.ID, err)
-			}
+			timer.Stop()
+			d.runOnce(ctx, s, r, next)
 		}
+	}
+}
+
+// runOnce performs a single check, capturing the timestamp at the
+// start of the run and the next scheduled time at the end (so
+// the state file records a meaningful NextRun even for cron
+// sources whose next interval is variable).
+func (d *daemon) runOnce(ctx context.Context, s *Source, r *sourceRunner, next intervalFn) {
+	now := time.Now()
+	items, err := fetchSource(ctx, s, now)
+	if err != nil {
+		log.Printf("[%s] check failed: %v", s.ID, err)
+		// Record the error in state so the web UI can surface
+		// it, but don't update items_seen (the source didn't
+		// successfully fetch).
+		d.st.recordError(s.ID, now, next(now), err)
+		d.saveState()
+		return
+	}
+	if err := checkOne(ctx, d.ntfy, d.st, s, items, now, next(now)); err != nil {
+		log.Printf("[%s] check failed: %v", s.ID, err)
+	}
+	d.saveState()
+}
+
+// saveState writes the in-memory state to disk. Errors are
+// logged but not returned — the next successful check will
+// produce another save attempt, and we don't want a transient
+// disk error to crash the daemon.
+func (d *daemon) saveState() {
+	if err := saveState(d.st.path, d.st); err != nil {
+		log.Printf("save state: %v", err)
 	}
 }
 

@@ -75,10 +75,13 @@ async function loadAll() {
     api("/api/config"),
   ]);
   renderSources(sources || [], state || {});
-  // Cache the current settings for the Settings dialog.
+  // Cache the current settings for the Settings dialog. The web
+  // token comes back masked ("****") so we don't overwrite the
+  // user's input on every reload.
   $("#settings-server").value = config?.ntfy?.server || "";
   $("#settings-topic").value = config?.ntfy?.topic || "";
   $("#settings-interval").value = config?.check?.interval || "";
+  $("#settings-listen").value = config?.web?.listen || "";
 }
 
 function renderSources(sources, state) {
@@ -213,7 +216,16 @@ function collectSourceForm() {
   return data;
 }
 
-$("#settings-btn").addEventListener("click", () => $("#settings-dialog").showModal());
+$("#settings-btn").addEventListener("click", () => {
+  // The token field is intentionally left blank on open — typing
+  // a new value rotates the token, leaving it blank keeps the
+  // current one (the server sees the absence of the field and
+  // leaves the existing token alone). The masked value from
+  // /api/config is "****" so we can't pre-fill.
+  $("#settings-token").value = "";
+  $("#settings-error").hidden = true;
+  $("#settings-dialog").showModal();
+});
 
 $("#settings-form").addEventListener("submit", async (e) => {
   if (e.submitter?.value !== "default") return;
@@ -221,12 +233,28 @@ $("#settings-form").addEventListener("submit", async (e) => {
   const body = {
     ntfy: { server: $("#settings-server").value, topic: $("#settings-topic").value },
     check: { interval: $("#settings-interval").value },
+    web:   { listen: $("#settings-listen").value },
   };
-  // The /api/settings endpoint is layered on in a later step; for
-  // now we just close the dialog and tell the user to edit TOML.
-  alert("Settings editing via UI is not yet implemented. Edit " +
-        "~/.config/checkdiff/config.toml directly and restart the daemon.");
-  $("#settings-dialog").close();
+  // Only include the token in the body if the user typed something.
+  // An empty input means "don't change the token".
+  if ($("#settings-token").value) {
+    body.web.token = $("#settings-token").value;
+  }
+  try {
+    await api("/api/settings", { method: "PUT", body: JSON.stringify(body) });
+    $("#settings-dialog").close();
+    // The token may have changed; the next request will be 401 if
+    // the new token is required, and the api() helper will clear
+    // localStorage and re-prompt. We re-store in case the user
+    // rotated to a new token and the server is now using it.
+    if (body.web.token) {
+      localStorage.setItem(TOKEN_KEY, body.web.token);
+    }
+    loadAll();
+  } catch (err) {
+    $("#settings-error").textContent = err.message;
+    $("#settings-error").hidden = false;
+  }
 });
 
 $("#connect-btn").addEventListener("click", connect);

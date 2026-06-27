@@ -2,26 +2,23 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 )
 
 var (
-	flagConfig     = flag.String("config", defaultConfigPath(), "path to config TOML")
-	flagState      = flag.String("state", defaultStatePath(), "path to state JSON")
-	flagDryRun     = flag.Bool("dry-run", false, "fetch and diff but don't send ntfy messages")
-	flagVerbose    = flag.Bool("v", false, "verbose logging")
-	flagInit       = flag.Bool("init", false, "write a default config and exit")
-	flagGhPath     = flag.String("gh", "", "explicit path to gh binary (default: auto-discover)")
-	flagTestNotify = flag.Bool("test-notify", false, "send a single 'test' notification (to verify ntfy wiring) and exit")
-	flagDaemon     = flag.Bool("daemon", false, "run as a long-lived daemon with per-source goroutines (one-shot is the default)")
+	flagConfig  = flag.String("config", defaultConfigPath(), "path to config TOML")
+	flagState   = flag.String("state", defaultStatePath(), "path to state JSON")
+	flagVerbose = flag.Bool("v", false, "verbose logging")
+	flagGhPath  = flag.String("gh", "", "explicit path to gh binary (default: auto-discover)")
 )
 
 func defaultConfigPath() string {
@@ -40,28 +37,27 @@ func defaultStatePath() string {
 
 func main() {
 	// Go's log package defaults to stderr. Send everything to stdout
-	// so the launchd job can route both streams to a single log file
-	// without losing the verbose (-v) output.
+	// so the supervisor (launchd, systemd, or a terminal) can route
+	// both streams to a single log destination.
 	log.SetOutput(os.Stdout)
 	log.SetFlags(log.LstdFlags)
 
 	flag.Parse()
-	if *flagInit {
-		if err := writeDefaultConfig(*flagConfig); err != nil {
-			log.Fatalf("init: %v", err)
-		}
-		fmt.Printf("wrote default config to %s\n", *flagConfig)
-		return
-	}
 
 	cfg, err := loadConfig(*flagConfig)
 	if err != nil {
-		// If we're entering daemon mode and the config simply
-		// doesn't exist yet, generate a default with a fresh
-		// token. This is the first-run experience: the user
-		// runs `checkdiff -daemon` and gets a working setup
-		// with a token they can paste into the web UI.
-		if *flagDaemon && os.IsNotExist(err) {
+		// First-run experience: if the config file simply doesn't
+		// exist, generate a default with a fresh token before giving
+		// up. The user pastes the printed token into the web UI's
+		// login form, and localStorage keeps them signed in for
+		// subsequent visits.
+		//
+		// Use errors.Is (not os.IsNotExist) so the wrapped error from
+		// loadConfig is recognized. os.IsNotExist returns false for
+		// errors wrapped with fmt.Errorf("...: %w", err) — see the
+		// os.IsNotExist doc comment, which explicitly redirects
+		// wrapped-error callers to errors.Is(err, fs.ErrNotExist).
+		if errors.Is(err, fs.ErrNotExist) {
 			if genErr := ensureConfigForDaemon(*flagConfig); genErr != nil {
 				log.Fatalf("generate config: %v", genErr)
 			}
@@ -76,75 +72,29 @@ func main() {
 		log.Fatalf("state: %v", err)
 	}
 
-	if *flagTestNotify {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		ntfy := NewNtfyClient(cfg.Ntfy.Server, cfg.Ntfy.Topic)
-		err := ntfy.Publish(ctx, "checkdiff is wired up correctly. You'll get a real notification here the next time one of your watched sources changes.",
-			map[string]string{
-				"Title":    "✅ checkdiff test",
-				"Priority": "low",
-				"Tags":     "test_tube,white_check_mark",
-			})
-		if err != nil {
-			log.Fatalf("test-notify: %v", err)
-		}
-		fmt.Println("test notification sent")
-		return
-	}
-
 	if *flagVerbose {
-		ids := make([]string, len(cfg.Sources))
-		for i, s := range cfg.Sources {
-			ids[i] = s.ID
+		enabled := 0
+		for i := range cfg.Sources {
+			if cfg.Sources[i].IsEnabled() {
+				enabled++
+			}
 		}
-		log.Printf("loaded %d sources [%s], topic=%s server=%s",
-			len(cfg.Sources), strings.Join(ids, ", "), cfg.Ntfy.Topic, cfg.Ntfy.Server)
+		log.Printf("loaded %d sources (%d enabled), topic=%s server=%s",
+			len(cfg.Sources), enabled, cfg.Ntfy.Topic, cfg.Ntfy.Server)
 	}
 
-	ntfy := NewNtfyClient(cfg.Ntfy.Server, cfg.Ntfy.Topic)
-
-	// Daemon mode: one goroutine per enabled source, blocks on
-	// SIGINT/SIGTERM. The one-shot path below is the default and
-	// is used for testing, dry-runs, and CI invocations.
-	if *flagDaemon {
-		runDaemon(cfg, st, ntfy)
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-
-	anyError := false
-	for i := range cfg.Sources {
-		s := &cfg.Sources[i]
-		interval, err := time.ParseDuration(s.ResolvedInterval(cfg.Check.Interval))
-		if err != nil {
-			log.Printf("[%s] error: invalid interval %q: %v", s.ID, s.ResolvedInterval(cfg.Check.Interval), err)
-			anyError = true
-			continue
-		}
-		if err := checkOne(ctx, ntfy, st, s, interval); err != nil {
-			log.Printf("[%s] error: %v", s.ID, err)
-			anyError = true
-		}
-	}
-
-	st.LastRun = time.Now().UTC()
-	if err := saveState(*flagState, st); err != nil {
-		log.Printf("save state: %v", err)
-		anyError = true
-	}
-
-	if anyError {
-		os.Exit(1)
-	}
+	runDaemon(cfg, st)
 }
 
 // runDaemon starts the long-running supervisor and blocks until
 // SIGINT/SIGTERM. On signal it stops the supervisor, saves state,
 // and exits.
-func runDaemon(cfg *Config, st *State, ntfy *NtfyClient) {
+//
+// The daemon is the binary's only mode. The web UI rewrites the
+// TOML config; the fsnotify watcher picks up the change and
+// triggers a Reload. Per-source goroutines start, stop, and
+// restart as the config evolves.
+func runDaemon(cfg *Config, st *State) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -157,12 +107,14 @@ func runDaemon(cfg *Config, st *State, ntfy *NtfyClient) {
 		cancel()
 	}()
 
+	ntfy := NewNtfyClient(cfg.Ntfy.Server, cfg.Ntfy.Topic)
+
 	d := newDaemon(cfg, st, ntfy)
 	d.Start(ctx)
 
 	// Start the web server (HTTP API + UI). If [web] token is
 	// empty, this is a no-op and the daemon runs headless.
-	ws := newWebServer(cfg, d, st)
+	ws := newWebServer(cfg, d, st, *flagConfig, *flagState)
 	if err := ws.Start(); err != nil {
 		log.Printf("web server: %v", err)
 	}
@@ -171,7 +123,9 @@ func runDaemon(cfg *Config, st *State, ntfy *NtfyClient) {
 	// re-parse the config and ask the daemon to reconcile its
 	// per-source runners. The daemon preserves the in-memory
 	// state (items_seen, items_hash) so editing a URL doesn't
-	// flood the user with "new" notifications.
+	// flood the user with "new" notifications. The web server
+	// also re-reads the new config so the token and listen
+	// address changes take effect.
 	cw := newConfigWatcher(*flagConfig, func() {
 		newCfg, err := loadConfig(*flagConfig)
 		if err != nil {
@@ -180,6 +134,7 @@ func runDaemon(cfg *Config, st *State, ntfy *NtfyClient) {
 		}
 		log.Printf("config reloaded: %d sources", len(newCfg.Sources))
 		d.Reload(newCfg)
+		ws.Reload(newCfg)
 	})
 	if err := cw.Start(ctx); err != nil {
 		log.Printf("config watcher: %v", err)
@@ -195,8 +150,7 @@ func runDaemon(cfg *Config, st *State, ntfy *NtfyClient) {
 		log.Printf("daemon running: %d enabled sources", enabled)
 	}
 
-	// Block until the context is cancelled (by the signal handler
-	// or by a future config-reload path that wants to restart us).
+	// Block until the context is cancelled (by the signal handler).
 	<-ctx.Done()
 
 	ws.Stop()
@@ -207,33 +161,24 @@ func runDaemon(cfg *Config, st *State, ntfy *NtfyClient) {
 	}
 }
 
-func checkOne(ctx context.Context, ntfy *NtfyClient, st *State, s *Source, interval time.Duration) error {
-	now := time.Now().UTC()
-	items, err := fetchSource(ctx, s, now)
-	if err != nil {
-		// Surface the error to ntfy as a separate notification so the
-		// user knows the check ran but failed. Don't update state.
-		if !*flagDryRun {
-			_ = ntfy.Publish(ctx,
-				fmt.Sprintf("check failed: %v", err),
-				map[string]string{
-					"Title":    fmt.Sprintf("⚠️ %s: check failed", s.Name),
-					"Priority": "high",
-					"Tags":     "warning,checkdiff",
-					"Click":    s.URL,
-				})
-		}
-		return err
-	}
-
+// checkOne performs a single check on s and updates the in-memory
+// state. It is called from the per-source goroutine after a
+// successful fetchSource. The `now` and `nextRun` parameters are
+// captured by the caller so the timestamp seen by the URL
+// templater is the same one recorded in state.
+//
+// checkOne handles three cases:
+//   - First run for this source: record baseline, no notification.
+//   - Subsequent run with no diff: just remember the new items.
+//   - Subsequent run with diff: publish to ntfy, then remember.
+func checkOne(ctx context.Context, ntfy *NtfyClient, st *State, s *Source, items []Item, now, nextRun time.Time) error {
 	srcState, exists := st.Sources[s.ID]
 
 	// First run for this source: record the baseline and stay quiet.
 	// We don't want a flood of "new" notifications for the 154 h3
 	// entries that already exist on the changelog.
 	if !exists {
-		now := time.Now().UTC()
-		st.remember(s.ID, items, now, interval, 0, 0, "")
+		st.remember(s.ID, items, now, nextRun, 0, 0, "")
 		if *flagVerbose {
 			log.Printf("[%s] first run, baseline set (%d items), no notification", s.ID, len(items))
 		}
@@ -264,7 +209,7 @@ func checkOne(ctx context.Context, ntfy *NtfyClient, st *State, s *Source, inter
 	}
 
 	// Always remember the current set, even when nothing changes.
-	defer st.remember(s.ID, items, now, interval, len(added), len(removed), "")
+	defer st.remember(s.ID, items, now, nextRun, len(added), len(removed), "")
 
 	if len(added) == 0 && len(removed) == 0 {
 		if *flagVerbose {
@@ -275,10 +220,6 @@ func checkOne(ctx context.Context, ntfy *NtfyClient, st *State, s *Source, inter
 
 	if *flagVerbose {
 		log.Printf("[%s] %d items, %d added, %d removed", s.ID, len(items), len(added), len(removed))
-	}
-
-	if *flagDryRun {
-		return nil
 	}
 
 	title, body, priority, tags := formatNotification(s, added, removed)
@@ -312,118 +253,3 @@ func clickURLFor(s *Source, added []Item) string {
 	}
 	return s.URL
 }
-
-// writeDefaultConfig drops a starter config next to the configured
-// config path so the user can `checkdiff -init` once and edit.
-func writeDefaultConfig(path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, []byte(defaultConfigTOML), 0o644)
-}
-
-// defaultConfigTOML is the starter config written by `-init`. One of
-// the sources is left commented out as a worked example of how to
-// pause a source without losing the entry.
-//
-// Standard `[ntfy]` / `[[sources]]` style is used so the file looks
-// like idiomatic TOML. To disable a source, comment out its entire
-// `[[sources]]` block (the header line plus every key = value line
-// beneath it, up to the next blank line or header). The TOML parser
-// drops the lines and the source is skipped at run time.
-const defaultConfigTOML = `# checkdiff config — https://github.com/...
-#
-# To temporarily disable a source, comment out its [[sources]] block
-# entirely (the '[[sources]]' line plus every 'key = value' line
-# beneath it, up to the next blank line or header). The TOML parser
-# drops the lines, the source is skipped at run time, and the baseline
-# in state.json is preserved so uncommenting it later won't fire a
-# flood of "new" notifications.
-
-[ntfy]
-server = "https://ntfy.sh"
-topic  = "REPLACE_ME"
-
-[check]
-# How often the timer fires. Accepts any Go duration string ("1h",
-# "30m", "10m", "15s", "2h30m", etc.). Must be >= 1 minute and must
-# evenly divide an hour (minute-level) or 24h (hour-level) or 30d
-# (day-level). On Linux, drives the systemd timer's OnCalendar (see
-# 'checkdiff -print-timer'). On macOS, drives the launchd plist's
-# StartInterval (see the Makefile). Default: 1h.
-check_interval = "1h"
-
-# [[sources]]
-# id   = "opencode-go-docs"
-# name = "opencode go.mdx"
-# type = "github_file"
-# owner = "anomalyco"
-# repo  = "opencode"
-# ref  = "dev"
-# path = "packages/web/src/content/docs/go.mdx"
-
-# JSON source with a per-item URL. Set link_field to the JSON field
-# whose string value is the item's link; the notification's Click
-# header opens that URL (falling back to the source's url) and the
-# item is rendered as a markdown link in the body. Useful for
-# package tracking, ticket systems, etc., where each entry has its
-# own detail page.
-# [[sources]]
-# id   = "uniuni-package"
-# name = "uniuni package"
-# type = "json"
-# url  = "https://api.uniuni.example/track"
-# items_path = "data.packages"
-# id_field   = "tno"
-# title_field = "tno"
-# link_field = "tracking_url"
-
-# JSON source with a single fixed destination. Set 'link' to a
-# static URL and the notification's Click header opens it instead
-# of the source's url. Useful for sources where every entry is a
-# status change for the same underlying thing (e.g. scan events
-# for a single package) and you want the Click to go to a single
-# detail page.
-# [[sources]]
-# id   = "uniuni-package"
-# name = "uniuni package"
-# type = "json"
-# url  = "https://delivery-api.uniuni.ca/track?id=..."
-# items_path = "data.valid_tno[0].spath_list"
-# id_field   = "id"
-# title_field = "code"
-# link = "https://www.uniuni.com/tracking/#tracking-detail?no=U000180542908940"
-
-[[sources]]
-id   = "opencode-go-route"
-name = "opencode go route"
-type = "github_file"
-owner = "anomalyco"
-repo  = "opencode"
-ref  = "dev"
-path = "packages/console/app/src/routes/go/index.tsx"
-
-[[sources]]
-id       = "artificial-analysis-changelog"
-name     = "Artificial Analysis Changelog"
-type     = "html"
-url      = "https://artificialanalysis.ai/changelog"
-selector = "h3"
-
-# OpenRouter model list. The site is client-rendered, so we hit the
-# public JSON API directly. Newest models appear first. The defaults
-# (items_path="data", id_field="id", title_field="name") match the
-# API response shape — no extra fields needed.
-[[sources]]
-id   = "openrouter-models"
-name = "OpenRouter Models"
-type = "json"
-url  = "https://openrouter.ai/api/v1/models"
-
-[[sources]]
-id       = "tfc-volleyball-grass"
-name     = "TFC Volleyball — 2026 Grass Leagues"
-type     = "html"
-url      = "https://tfcvolleyball.com/"
-selector = "li.attachedfile"
-`

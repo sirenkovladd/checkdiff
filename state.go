@@ -4,11 +4,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -26,10 +29,15 @@ const currentStateVersion = 2
 //     add/remove diff) plus operational fields (last run time, next
 //     scheduled run, error from the last attempt, diff counts, and
 //     a hash fingerprint of the current item set).
+//   - Path is the on-disk path the state was loaded from. The
+//     daemon needs this to call saveState() from contexts (the
+//     per-source goroutines, hot-reload, etc.) that don't have
+//     the path passed in. It's not serialized.
 type State struct {
 	Version int                     `json:"version"`
 	LastRun time.Time               `json:"last_run"`
 	Sources map[string]*SourceState `json:"sources"`
+	path    string                  `json:"-"`
 }
 
 // SourceState is the per-source runtime state. The ItemsSeen field
@@ -65,10 +73,16 @@ type SourceState struct {
 func loadState(path string) (*State, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
+		// Use errors.Is (not os.IsNotExist) so wrapped errors are
+		// recognized. os.IsNotExist returns false for errors wrapped
+		// with fmt.Errorf("...: %w", err) — see the os.IsNotExist
+		// doc comment, which explicitly redirects wrapped-error
+		// callers to errors.Is(err, fs.ErrNotExist).
+		if errors.Is(err, fs.ErrNotExist) {
 			return &State{
 				Version: currentStateVersion,
 				Sources: map[string]*SourceState{},
+				path:    path,
 			}, nil
 		}
 		return nil, fmt.Errorf("read state %s: %w", path, err)
@@ -99,6 +113,7 @@ func loadState(path string) (*State, error) {
 		Version: currentStateVersion,
 		LastRun: raw.LastRun,
 		Sources: make(map[string]*SourceState, len(raw.Sources)),
+		path:    path,
 	}
 	for id, msg := range raw.Sources {
 		// Try v2 shape first.
@@ -154,7 +169,16 @@ func isLegacyHTMLID(k string) bool {
 	return true
 }
 
+// saveStateMu serializes concurrent calls to saveState. Without
+// it, two per-source goroutines that finish checks at the same
+// instant both write to the same .tmp file, and one's rename
+// races the other's write — leaving the .tmp file in an
+// inconsistent state on disk.
+var saveStateMu sync.Mutex
+
 func saveState(path string, s *State) error {
+	saveStateMu.Lock()
+	defer saveStateMu.Unlock()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -188,13 +212,15 @@ func (s *State) All() map[string]*SourceState {
 
 // remember updates the in-memory state for a source with the
 // current item set and the run metadata. Pass now=time.Now() and
-// the interval used to schedule the next run (computed by the
-// caller from Source.ResolvedInterval). Pass added/removed counts
-// and an optional error string from the most recent check.
+// the next scheduled run time (computed by the caller via the
+// source's intervalFn; the helper doesn't know whether the
+// source is on a fixed duration or a cron expression). Pass
+// added/removed counts and an optional error string from the
+// most recent check.
 //
 // ItemsHash is computed from the sorted item IDs so the web UI
 // can show a stable fingerprint of the current set.
-func (s *State) remember(sourceID string, items []Item, now time.Time, nextInterval time.Duration, added, removed int, lastErr string) {
+func (s *State) remember(sourceID string, items []Item, now, nextRun time.Time, added, removed int, lastErr string) {
 	seen := make(map[string]bool, len(items))
 	ids := make([]string, 0, len(items))
 	for _, it := range items {
@@ -211,12 +237,39 @@ func (s *State) remember(sourceID string, items []Item, now time.Time, nextInter
 	src := &SourceState{
 		ItemsSeen:   seen,
 		LastRun:     now,
-		NextRun:     now.Add(nextInterval),
+		NextRun:     nextRun,
 		LastError:   lastErr,
 		LastAdded:   added,
 		LastRemoved: removed,
-		ItemsHash:   hex.EncodeToString(h.Sum(nil)),
-		ItemsCount:  len(items),
+		// "sha256:" prefix makes the hash self-identifying — useful
+		// in the web UI and in any future log output where the user
+		// sees a bare 64-char hex string and wonders which hash
+		// algorithm produced it.
+		ItemsHash:  "sha256:" + hex.EncodeToString(h.Sum(nil)),
+		ItemsCount: len(items),
 	}
 	s.Sources[sourceID] = src
+}
+
+// recordError updates only the operational fields (timestamps,
+// error message) of a source's state, leaving ItemsSeen and
+// ItemsHash untouched. Used when a fetch fails: we don't want to
+// lose the baseline, but we do want the web UI to surface the
+// error.
+//
+// If the source has no state yet, a minimal SourceState is
+// created so the web UI can show the error from the first run.
+func (s *State) recordError(sourceID string, now, nextRun time.Time, err error) {
+	src, ok := s.Sources[sourceID]
+	if !ok {
+		src = &SourceState{
+			ItemsSeen: map[string]bool{},
+		}
+		s.Sources[sourceID] = src
+	}
+	src.LastRun = now
+	src.NextRun = nextRun
+	src.LastError = err.Error()
+	// ItemsSeen / ItemsHash / LastAdded / LastRemoved are left
+	// alone — a failed fetch shouldn't reset the diff baseline.
 }

@@ -3,7 +3,9 @@ package main
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -23,7 +25,7 @@ func ensureConfigForDaemon(path string) error {
 	if _, err := os.Stat(path); err == nil {
 		// Config exists; nothing to do.
 		return nil
-	} else if !os.IsNotExist(err) {
+	} else if !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("stat config: %w", err)
 	}
 

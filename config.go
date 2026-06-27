@@ -1,10 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -80,43 +80,44 @@ type WebConfig struct {
 // To pause a source temporarily, comment out its [[sources]] block
 // in the TOML file. The decoder will skip the entry entirely.
 type Source struct {
-	ID   string `toml:"id"`
-	Name string `toml:"name"`
-	Type string `toml:"type"`
-	URL  string `toml:"url,omitempty"`
+	ID   string `toml:"id" json:"id"`
+	Name string `toml:"name" json:"name"`
+	Type string `toml:"type" json:"type"`
+	URL  string `toml:"url,omitempty" json:"url,omitempty"`
 
 	// GitHub-specific
-	Owner string `toml:"owner,omitempty"`
-	Repo  string `toml:"repo,omitempty"`
-	Ref   string `toml:"ref,omitempty"`
-	Path  string `toml:"path,omitempty"`
+	Owner string `toml:"owner,omitempty" json:"owner,omitempty"`
+	Repo  string `toml:"repo,omitempty" json:"repo,omitempty"`
+	Ref   string `toml:"ref,omitempty" json:"ref,omitempty"`
+	Path  string `toml:"path,omitempty" json:"path,omitempty"`
 
 	// HTML-specific
-	Selector string `toml:"selector,omitempty"`
+	Selector string `toml:"selector,omitempty" json:"selector,omitempty"`
 
 	// JSON-specific
-	ItemsPath  string `toml:"items_path,omitempty"`
-	IDField    string `toml:"id_field,omitempty"`
-	TitleField string `toml:"title_field,omitempty"`
+	ItemsPath  string `toml:"items_path,omitempty" json:"items_path,omitempty"`
+	IDField    string `toml:"id_field,omitempty" json:"id_field,omitempty"`
+	TitleField string `toml:"title_field,omitempty" json:"title_field,omitempty"`
 	// LinkField is the JSON field whose string value is attached to
 	// each item as its Link. When set, items carry their own URL —
 	// the notification's ntfy Click header uses the first added
 	// item's Link (falling back to s.URL) and that item is rendered
 	// as a markdown link in the body. Useful for sources like
 	// package tracking where each entry has its own detail page.
-	LinkField string `toml:"link_field,omitempty"`
+	LinkField string `toml:"link_field,omitempty" json:"link_field,omitempty"`
 	// Link is a static URL attached to the source as a whole. The
 	// notification's Click header uses it (after per-item Link, before
 	// the bare URL) so the user is taken to a fixed destination —
 	// e.g. a package tracking page for a single-package source.
-	Link string `toml:"link,omitempty"`
+	Link string `toml:"link,omitempty" json:"link,omitempty"`
 
 	// CheckInterval overrides [check].check_interval for this source.
-	// Accepts a Go duration string ("1h", "30m", "10m", "15s", "2h30m").
-	// If empty, the source uses the global [check].check_interval.
-	// Today this is loaded and validated but not yet used for
-	// scheduling — the daemon-mode scheduler is the next step.
-	CheckInterval string `toml:"check_interval,omitempty"`
+	// Accepts either a Go duration string ("1h", "30m", "10m", "15s",
+	// "2h30m") or a standard 5-field cron expression
+	// ("0 */6 * * *", "*/15 * * * *"). The format is auto-detected
+	// by the presence of whitespace. If empty, the source uses the
+	// global [check].check_interval.
+	CheckInterval string `toml:"check_interval,omitempty" json:"check_interval,omitempty"`
 
 	// Enabled controls whether the source is active. The pointer
 	// is used so that a missing field in the TOML (the common case
@@ -125,7 +126,7 @@ type Source struct {
 	// preserves backward compatibility with sources written before
 	// this field existed. The IsEnabled method hides the pointer
 	// from the rest of the codebase.
-	Enabled *bool `toml:"enabled,omitempty"`
+	Enabled *bool `toml:"enabled,omitempty" json:"enabled,omitempty"`
 }
 
 // IsEnabled reports whether the source should be active. A nil
@@ -186,8 +187,8 @@ func loadConfig(path string) (*Config, error) {
 	if c.Web.Listen == "" {
 		c.Web.Listen = "127.0.0.1:8080"
 	}
-	if _, err := time.ParseDuration(c.Check.Interval); err != nil {
-		return nil, fmt.Errorf("config: check.check_interval %q: %w", c.Check.Interval, err)
+	if _, err := parseInterval(c.Check.Interval); err != nil {
+		return nil, fmt.Errorf("config: check.check_interval: %w", err)
 	}
 	seen := make(map[string]bool, len(c.Sources))
 	for i := range c.Sources {
@@ -203,15 +204,12 @@ func loadConfig(path string) (*Config, error) {
 			s.Name = s.ID
 		}
 		if s.CheckInterval != "" {
-			// Per-source interval only needs to be a valid Go duration
-			// of at least 1 minute. The daemon uses an internal
-			// ticker and accepts any duration >= 1 minute.
-			d, err := time.ParseDuration(s.CheckInterval)
-			if err != nil {
-				return nil, fmt.Errorf("config: source %q: check_interval %q: %w", s.ID, s.CheckInterval, err)
-			}
-			if d < time.Minute {
-				return nil, fmt.Errorf("config: source %q: check_interval must be >= 1 minute (got %s)", s.ID, d)
+			// Per-source interval accepts either a Go duration
+			// (>= 1 minute) or a 5-field cron expression. The
+			// format is auto-detected; the helper is the only
+			// place the choice is made.
+			if _, err := parseInterval(s.CheckInterval); err != nil {
+				return nil, fmt.Errorf("config: source %q: check_interval: %w", s.ID, err)
 			}
 		}
 		if err := validateSource(s); err != nil {
@@ -219,6 +217,51 @@ func loadConfig(path string) (*Config, error) {
 		}
 	}
 	return &c, nil
+}
+
+// marshalConfig encodes cfg to TOML. The web UI rewrites the
+// config on every change, so the format produced here is what
+// the user sees in their config.toml file. We use a stable
+// header (the date and a "this file is auto-generated" comment
+// when the file is fresh) so the file is at least somewhat
+// self-documenting.
+func marshalConfig(cfg *Config) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := toml.NewEncoder(&buf)
+	if err := enc.Encode(cfg); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// writeFileAtomic writes data to tmp, fsyncs, then renames over
+// path. The rename is atomic on POSIX filesystems, so concurrent
+// readers (e.g. the fsnotify watcher, a separate `checkdiff`
+// invocation) never see a half-written file.
+func writeFileAtomic(tmp, path string, data []byte, perm os.FileMode) error {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return fmt.Errorf("open tmp: %w", err)
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return fmt.Errorf("write tmp: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return fmt.Errorf("fsync tmp: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("close tmp: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("rename tmp: %w", err)
+	}
+	return nil
 }
 
 func validateSource(s *Source) error {

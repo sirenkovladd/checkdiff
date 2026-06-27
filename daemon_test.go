@@ -274,3 +274,39 @@ func TestDaemonTriggerNowIsIdempotent(t *testing.T) {
 		}
 	}
 }
+
+func TestDaemonReloadUpdatesNtfyClient(t *testing.T) {
+	// Reload with a new config that has a different ntfy topic
+	// should update the daemon's existing ntfy client in place,
+	// so the next notification uses the new topic.
+	//
+	// st.path is left empty so the daemon's saveState calls are
+	// no-ops — this test doesn't care about state persistence,
+	// and avoiding the write avoids a race with t.TempDir cleanup.
+	enabled := true
+	cfg := &Config{
+		Ntfy:  NtfyConfig{Server: "https://ntfy.sh", Topic: "old"},
+		Check: CheckConfig{Interval: "1h"},
+		Sources: []Source{
+			{ID: "a", Name: "a", Type: "json", URL: "https://127.0.0.1:1", Enabled: &enabled},
+		},
+	}
+	st := &State{Version: currentStateVersion, Sources: map[string]*SourceState{}}
+	ntfy := NewNtfyClient("https://ntfy.sh", "old")
+	d := newDaemon(cfg, st, ntfy)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d.Start(ctx)
+	defer d.Stop()
+
+	if d.ntfy.Topic != "old" {
+		t.Fatalf("initial ntfy.Topic = %q, want old", d.ntfy.Topic)
+	}
+
+	newCfg := *cfg
+	newCfg.Ntfy.Topic = "new"
+	d.Reload(&newCfg)
+	if d.ntfy.Topic != "new" {
+		t.Errorf("after Reload: ntfy.Topic = %q, want new", d.ntfy.Topic)
+	}
+}

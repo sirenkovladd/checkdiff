@@ -9,16 +9,16 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/checkdiff -daemon -config /etc/checkdiff/config.toml -state /var/lib/checkdiff/state.json
+ExecStart=/usr/local/bin/checkdiff -config /etc/checkdiff/config.toml -state /var/lib/checkdiff/state.json
 Restart=always
 RestartSec=5
 
-# Hardening: the daemon doesn't need to write to the filesystem
-# beyond the state file. The state directory must be writable
-# (StateDirectory= handles that), and ProtectSystem=strict
-# makes everything else read-only.
+# The daemon writes only to the state file. StateDirectory=
+# makes /var/lib/checkdiff writable and owned by the service
+# user; the binary is told to put the state file there via
+# the -state flag. ProtectSystem=strict makes everything else
+# read-only.
 StateDirectory=checkdiff
-ConfigurationDirectory=checkdiff
 ProtectSystem=strict
 ProtectHome=read-only
 PrivateTmp=true

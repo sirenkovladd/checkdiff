@@ -4,6 +4,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // urlPlaceholders lists the supported {{...}} substitutions and the
@@ -16,11 +18,21 @@ import (
 // error. The user's stated use case (%5D&ui_random={{.UnixMilli}})
 // is the primary motivation; if a URL later needs real templating
 // (conditionals, loops) we can layer text/template on top.
+// urlPlaceholders lists the supported {{...}} substitutions and the
+// functions that produce the replacement string for each. The map
+// lookup is the only place that maps a placeholder name to its
+// formatter — adding a new placeholder is one line.
+//
+// The formatter receives the run's `now` timestamp. For most
+// placeholders this is the source of truth; {{.UUID}} ignores it
+// because the UUID is freshly generated on every call (no time
+// component).
 var urlPlaceholders = map[string]func(time.Time) string{
 	"{{.UnixMilli}}": func(t time.Time) string { return strconv.FormatInt(t.UnixMilli(), 10) },
 	"{{.Unix}}":      func(t time.Time) string { return strconv.FormatInt(t.Unix(), 10) },
 	"{{.ISO}}":       func(t time.Time) string { return t.UTC().Format(time.RFC3339) },
 	"{{.Date}}":      func(t time.Time) string { return t.UTC().Format("2006-01-02") },
+	"{{.UUID}}":      func(t time.Time) string { return uuid.New().String() },
 }
 
 // renderURL applies the {{...}} substitutions listed in

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -65,10 +66,23 @@ func TestRenderURL(t *testing.T) {
 			in:   "prefix-{{.UnixMilli}}",
 			want: "prefix-1700000000123",
 		},
+		{
+			name: "UUID placeholder",
+			in:   "https://example.com/api?id={{.UUID}}",
+			want: "", // verified separately below
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			got := renderURL(c.in, now)
+			// The UUID test verifies the format separately; the
+			// expected literal is empty for that case.
+			if c.want == "" {
+				if !strings.HasPrefix(got, "https://example.com/api?id=") {
+					t.Errorf("renderURL(%q) = %q, want URL prefix", c.in, got)
+				}
+				return
+			}
 			if got != c.want {
 				t.Errorf("renderURL(%q) = %q, want %q", c.in, got, c.want)
 			}
@@ -79,6 +93,7 @@ func TestRenderURL(t *testing.T) {
 func TestRenderURLAllSubstitutionsSeeSameTimestamp(t *testing.T) {
 	// All placeholders in one URL must see the same `now` value —
 	// callers pass a single timestamp and expect consistent results.
+	// (UUID is excluded: it's a fresh value per call by design.)
 	now := time.Unix(1700000000, 0).UTC()
 	in := "{{.Unix}}|{{.UnixMilli}}|{{.ISO}}|{{.Date}}"
 	got := renderURL(in, now)
@@ -86,5 +101,19 @@ func TestRenderURLAllSubstitutionsSeeSameTimestamp(t *testing.T) {
 		if part == "" {
 			t.Errorf("renderURL left an empty segment: %q", got)
 		}
+	}
+}
+
+func TestRenderURLUUIDIsFresh(t *testing.T) {
+	// {{.UUID}} must produce a different value on every call —
+	// it's used to bust caches that key on the URL alone.
+	in := "https://example.com/api?id={{.UUID}}"
+	a := renderURL(in, time.Unix(1700000000, 0).UTC())
+	b := renderURL(in, time.Unix(1700000000, 0).UTC())
+	if a == b {
+		t.Errorf("two renders of {{.UUID}} produced the same value: %q", a)
+	}
+	if !regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`).MatchString(strings.TrimPrefix(a, "https://example.com/api?id=")) {
+		t.Errorf("{{.UUID}} substitution did not look like a UUID: %q", a)
 	}
 }

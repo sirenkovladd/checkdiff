@@ -63,7 +63,9 @@
     <label>ID <input name="id" id="source-id" required></label>
     <label>Name <input name="name" id="source-name"></label>
     <label>URL <input name="url" id="source-url"></label>
-    <label>Interval <input name="check_interval" id="source-interval" placeholder="e.g. 30m (blank = global default)"></label>
+    <p class="hint">Placeholders: <code>{{.UnixMilli}}</code> <code>{{.Unix}}</code> <code>{{.ISO}}</code> <code>{{.Date}}</code> <code>{{.UUID}}</code></p>
+    <label>Interval <input name="check_interval" id="source-interval" placeholder="e.g. 30m or &quot;0 */6 * * *&quot; (blank = global default)"></label>
+    <p class="hint">Accepts a Go duration (<code>30m</code>, <code>1h</code>) or a 5-field cron expression (<code>0 */6 * * *</code>).</p>
     <label>Enabled <input type="checkbox" name="enabled" id="source-enabled" checked></label>
     <div id="source-type-fields"></div>
     <menu>
@@ -79,7 +81,10 @@
     <label>ntfy server <input name="server" id="settings-server"></label>
     <label>ntfy topic <input name="topic" id="settings-topic"></label>
     <label>Default interval <input name="interval" id="settings-interval" placeholder="e.g. 1h"></label>
-    <p class="hint">The web token is read-only here. Edit <code>config.toml</code> directly to change it.</p>
+    <label>Web listen address <input name="listen" id="settings-listen" placeholder="e.g. 127.0.0.1:8080"></label>
+    <label>Web token <input name="token" id="settings-token" placeholder="leave blank to disable web UI"></label>
+    <p class="hint">Token and listen changes take effect on save. Other ntfy changes take effect immediately.</p>
+    <p id="settings-error" class="error" hidden></p>
     <menu>
       <button value="cancel">Cancel</button>
       <button id="settings-save" value="default" class="primary">Save</button>
