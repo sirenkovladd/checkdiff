@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -20,6 +22,7 @@ var (
 	flagGhPath     = flag.String("gh", "", "explicit path to gh binary (default: auto-discover)")
 	flagTestNotify = flag.Bool("test-notify", false, "send a single 'test' notification (to verify ntfy wiring) and exit")
 	flagPrintTimer = flag.Bool("print-timer", false, "print a systemd user timer unit (driven by [check].check_interval) to stdout and exit")
+	flagDaemon     = flag.Bool("daemon", false, "run as a long-lived daemon with per-source goroutines (one-shot is the default)")
 )
 
 func defaultConfigPath() string {
@@ -101,6 +104,15 @@ func main() {
 	}
 
 	ntfy := NewNtfyClient(cfg.Ntfy.Server, cfg.Ntfy.Topic)
+
+	// Daemon mode: one goroutine per enabled source, blocks on
+	// SIGINT/SIGTERM. The one-shot path below is the default and
+	// is used for testing, dry-runs, and CI invocations.
+	if *flagDaemon {
+		runDaemon(cfg, st, ntfy)
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
@@ -127,6 +139,46 @@ func main() {
 
 	if anyError {
 		os.Exit(1)
+	}
+}
+
+// runDaemon starts the long-running supervisor and blocks until
+// SIGINT/SIGTERM. On signal it stops the supervisor, saves state,
+// and exits.
+func runDaemon(cfg *Config, st *State, ntfy *NtfyClient) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Translate OS signals into context cancellation.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		sig := <-sigCh
+		log.Printf("received signal %s, shutting down", sig)
+		cancel()
+	}()
+
+	d := newDaemon(cfg, st, ntfy)
+	d.Start(ctx)
+
+	if *flagVerbose {
+		enabled := 0
+		for _, s := range cfg.Sources {
+			if s.IsEnabled() {
+				enabled++
+			}
+		}
+		log.Printf("daemon running: %d enabled sources", enabled)
+	}
+
+	// Block until the context is cancelled (by the signal handler
+	// or by a future config-reload path that wants to restart us).
+	<-ctx.Done()
+
+	d.Stop()
+	st.LastRun = time.Now().UTC()
+	if err := saveState(*flagState, st); err != nil {
+		log.Printf("save state: %v", err)
 	}
 }
 

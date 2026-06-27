@@ -102,6 +102,31 @@ type Source struct {
 	// Today this is loaded and validated but not yet used for
 	// scheduling — the daemon-mode scheduler is the next step.
 	CheckInterval string `toml:"check_interval,omitempty"`
+
+	// Enabled controls whether the source is active. The pointer
+	// is used so that a missing field in the TOML (the common case
+	// for existing configs) is distinct from an explicit false: a
+	// nil pointer means "no preference, default to enabled", which
+	// preserves backward compatibility with sources written before
+	// this field existed. The IsEnabled method hides the pointer
+	// from the rest of the codebase.
+	Enabled *bool `toml:"enabled,omitempty"`
+}
+
+// IsEnabled reports whether the source should be active. A nil
+// Enabled pointer is treated as true (the historical default) so
+// existing configs without the field keep working.
+func (s *Source) IsEnabled() bool {
+	if s.Enabled == nil {
+		return true
+	}
+	return *s.Enabled
+}
+
+// SetEnabled is a convenience for code paths (web API, tests) that
+// want to flip the enabled flag without dealing with the pointer.
+func (s *Source) SetEnabled(v bool) {
+	s.Enabled = &v
 }
 
 // ResolvedInterval returns the effective polling interval for this
