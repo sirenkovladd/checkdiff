@@ -65,6 +65,8 @@
     <label>Name <input name="name" id="source-name"></label>
     <label>URL <input name="url" id="source-url"></label>
     <p class="hint">Placeholders: <code>{{.UnixMilli}}</code> <code>{{.Unix}}</code> <code>{{.ISO}}</code> <code>{{.Date}}</code> <code>{{.UUID}}</code></p>
+    <label>Link <input name="link" id="source-link"></label>
+    <p class="hint">Static URL used as the notification's click target when items don't carry their own per-item link (falls back here before the source's URL). Useful for single-page sources (e.g. one package tracker) where every item should open the same page.</p>
     <label>Interval <input name="check_interval" id="source-interval" placeholder="e.g. 30m or &quot;0 */6 * * *&quot; (blank = global default)"></label>
     <p class="hint">Accepts a Go duration (<code>30m</code>, <code>1h</code>) or a 5-field cron expression (<code>0 */6 * * *</code>).</p>
     <label>Enabled <input type="checkbox" name="enabled" id="source-enabled" checked></label>

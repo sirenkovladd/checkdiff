@@ -260,6 +260,7 @@ function openSourceDialog(src) {
   $("#source-id").readOnly = isEdit; // ID is the lookup key; don't let it change.
   $("#source-name").value = src?.name || "";
   $("#source-url").value = src?.url || "";
+  $("#source-link").value = src?.link || "";
   $("#source-interval").value = src?.check_interval || "";
   $("#source-enabled").checked = src?.enabled !== false;
   renderTypeFields(src);
@@ -273,7 +274,7 @@ function renderTypeFields(src) {
   const fields = {
     github_file: ["owner", "repo", "ref", "path"],
     html: ["selector"],
-    json: ["items_path", "id_field", "title_field", "link_field", "link"],
+    json: ["items_path", "id_field", "title_field", "link_field"],
     json_value: ["path"],
   }[type] || [];
   for (const f of fields) {
@@ -312,12 +313,13 @@ function collectSourceForm() {
     id: get("#source-id").trim(),
     name: get("#source-name").trim(),
     url: get("#source-url").trim(),
+    link: get("#source-link").trim(),
     check_interval: get("#source-interval").trim(),
     enabled: $("#source-enabled").checked,
   };
   // Type-specific fields.
   const type = data.type;
-  for (const f of ["owner", "repo", "ref", "path", "selector", "items_path", "id_field", "title_field", "link_field", "link"]) {
+  for (const f of ["owner", "repo", "ref", "path", "selector", "items_path", "id_field", "title_field", "link_field"]) {
     const el = $("#source-" + f);
     if (el && el.value) data[f] = el.value;
   }
