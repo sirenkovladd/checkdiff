@@ -94,6 +94,13 @@ type Source struct {
 	// the bare URL) so the user is taken to a fixed destination —
 	// e.g. a package tracking page for a single-package source.
 	Link string `toml:"link,omitempty"`
+
+	// CheckInterval overrides [check].check_interval for this source.
+	// Accepts a Go duration string ("1h", "30m", "10m", "15s", "2h30m").
+	// If empty, the source uses the global [check].check_interval.
+	// Today this is loaded and validated but not yet used for
+	// scheduling — the daemon-mode scheduler is the next step.
+	CheckInterval string `toml:"check_interval,omitempty"`
 }
 
 func loadConfig(path string) (*Config, error) {
@@ -129,6 +136,19 @@ func loadConfig(path string) (*Config, error) {
 		seen[s.ID] = true
 		if s.Name == "" {
 			s.Name = s.ID
+		}
+		if s.CheckInterval != "" {
+			// Per-source interval only needs to be a valid Go duration.
+			// The systemd OnCalendar constraints from onCalendarFor
+			// don't apply here — the daemon uses an internal ticker
+			// and accepts any duration >= 1 minute.
+			d, err := time.ParseDuration(s.CheckInterval)
+			if err != nil {
+				return nil, fmt.Errorf("config: source %q: check_interval %q: %w", s.ID, s.CheckInterval, err)
+			}
+			if d < time.Minute {
+				return nil, fmt.Errorf("config: source %q: check_interval must be >= 1 minute (got %s)", s.ID, d)
+			}
 		}
 		if err := validateSource(s); err != nil {
 			return nil, fmt.Errorf("config: source %q: %w", s.ID, err)
