@@ -22,6 +22,12 @@ type daemon struct {
 	st  *State
 	ntfy *NtfyClient
 
+	// parentCtx is the context passed to Start. It's stored so
+	// that Reload (triggered by the config watcher) can derive
+	// new goroutine contexts from the same parent, ensuring
+	// they all share the same cancellation signal.
+	parentCtx context.Context
+
 	mu      sync.Mutex
 	runners map[string]*sourceRunner
 }
@@ -57,6 +63,7 @@ func newDaemon(cfg *Config, st *State, ntfy *NtfyClient) *daemon {
 // before starting the second.
 func (d *daemon) Start(ctx context.Context) {
 	d.mu.Lock()
+	d.parentCtx = ctx
 	for id, r := range d.runners {
 		r.cancel()
 		delete(d.runners, id)
@@ -75,6 +82,28 @@ func (d *daemon) Start(ctx context.Context) {
 		}
 		d.startOne(ctx, s, interval)
 	}
+}
+
+// Reload swaps in a new Config and reconciles the per-source
+// runners: new sources get a fresh runner, removed sources are
+// cancelled, and changed sources (any field that affects the
+// runner — enabled, interval, URL, type) are cancelled and
+// restarted. The state map is preserved so the user doesn't
+// see a flood of "new" notifications after editing the config.
+//
+// Reload uses the parent context stored by the most recent
+// Start call, so the new goroutines share the same cancellation
+// signal as the original ones. If Start has never been called,
+// Reload is a no-op.
+func (d *daemon) Reload(newCfg *Config) {
+	d.mu.Lock()
+	parent := d.parentCtx
+	d.cfg = newCfg
+	d.mu.Unlock()
+	if parent == nil {
+		return
+	}
+	d.Start(parent)
 }
 
 // startOne spawns a single source's goroutine.

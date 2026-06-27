@@ -181,6 +181,24 @@ func runDaemon(cfg *Config, st *State, ntfy *NtfyClient) {
 		log.Printf("web server: %v", err)
 	}
 
+	// Watch the config file for changes. On debounced change,
+	// re-parse the config and ask the daemon to reconcile its
+	// per-source runners. The daemon preserves the in-memory
+	// state (items_seen, items_hash) so editing a URL doesn't
+	// flood the user with "new" notifications.
+	cw := newConfigWatcher(*flagConfig, func() {
+		newCfg, err := loadConfig(*flagConfig)
+		if err != nil {
+			log.Printf("config reload: %v", err)
+			return
+		}
+		log.Printf("config reloaded: %d sources", len(newCfg.Sources))
+		d.Reload(newCfg)
+	})
+	if err := cw.Start(ctx); err != nil {
+		log.Printf("config watcher: %v", err)
+	}
+
 	if *flagVerbose {
 		enabled := 0
 		for _, s := range cfg.Sources {
