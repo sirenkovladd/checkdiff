@@ -40,14 +40,20 @@ type Item struct {
 // set of items. The returned error is for transient failures (network,
 // gh CLI not found, etc.) and is reported to the user as a separate
 // error notification when set.
-func fetchSource(ctx context.Context, s *Source) ([]Item, error) {
+//
+// now is passed through to the underlying fetchers so that any
+// {{...}} placeholders in the source's URL fields are substituted
+// with a consistent timestamp. A single timestamp per run avoids
+// the case where two substitutions in one URL see different values
+// (which would be a subtle and confusing bug).
+func fetchSource(ctx context.Context, s *Source, now time.Time) ([]Item, error) {
 	switch s.Type {
 	case "github_file":
-		return fetchGitHubFile(ctx, s)
+		return fetchGitHubFile(ctx, s, now)
 	case "html":
-		return fetchHTML(ctx, s)
+		return fetchHTML(ctx, s, now)
 	case "json":
-		return fetchJSON(ctx, s)
+		return fetchJSON(ctx, s, now)
 	default:
 		return nil, fmt.Errorf("unsupported type %q", s.Type)
 	}
@@ -65,13 +71,20 @@ type githubContents struct {
 	Content  string `json:"content"`
 }
 
-func fetchGitHubFile(ctx context.Context, s *Source) ([]Item, error) {
+func fetchGitHubFile(ctx context.Context, s *Source, now time.Time) ([]Item, error) {
 	gh, err := resolveGhBinary()
 	if err != nil {
 		return nil, err
 	}
+	// Apply URL templates to the GitHub fields before composing the
+	// API path. This lets a source use {{.UnixMilli}} in owner/repo/
+	// ref/path to bust caches on APIs that key by those values.
+	owner := renderURL(s.Owner, now)
+	repo := renderURL(s.Repo, now)
+	ref := renderURL(s.Ref, now)
+	path := renderURL(s.Path, now)
 	apiPath := fmt.Sprintf("repos/%s/%s/contents/%s?ref=%s",
-		s.Owner, s.Repo, s.Path, s.Ref)
+		owner, repo, path, ref)
 
 	// Use --jq to keep gh's output tight and to fail fast on errors.
 	// We pull the whole JSON object back; it's small even for big files
@@ -121,8 +134,9 @@ func fetchGitHubFile(ctx context.Context, s *Source) ([]Item, error) {
 	}}, nil
 }
 
-func fetchHTML(ctx context.Context, s *Source) ([]Item, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", s.URL, nil)
+func fetchHTML(ctx context.Context, s *Source, now time.Time) ([]Item, error) {
+	url := renderURL(s.URL, now)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -135,7 +149,7 @@ func fetchHTML(ctx context.Context, s *Source) ([]Item, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("GET %s: %s", s.URL, resp.Status)
+		return nil, fmt.Errorf("GET %s: %s", url, resp.Status)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 5<<20)) // 5 MiB cap
 	if err != nil {
@@ -195,8 +209,9 @@ func fetchHTML(ctx context.Context, s *Source) ([]Item, error) {
 // array located at ItemsPath. Each item's ID is taken from IDField and
 // its display title from TitleField. IDs are stable, so additions and
 // removals between runs are detectable.
-func fetchJSON(ctx context.Context, s *Source) ([]Item, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", s.URL, nil)
+func fetchJSON(ctx context.Context, s *Source, now time.Time) ([]Item, error) {
+	url := renderURL(s.URL, now)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -210,7 +225,7 @@ func fetchJSON(ctx context.Context, s *Source) ([]Item, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("GET %s: %s", s.URL, resp.Status)
+		return nil, fmt.Errorf("GET %s: %s", url, resp.Status)
 	}
 	// JSON APIs can be larger than the 5 MiB HTML cap. Allow up to
 	// 25 MiB — still bounded so a misconfigured source can't fill RAM.
@@ -221,7 +236,7 @@ func fetchJSON(ctx context.Context, s *Source) ([]Item, error) {
 
 	rawItems, err := extractJSONArray(body, s.ItemsPath)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", s.URL, err)
+		return nil, fmt.Errorf("%s: %w", url, err)
 	}
 
 	items := make([]Item, 0, len(rawItems))

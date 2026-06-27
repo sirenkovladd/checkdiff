@@ -131,7 +131,8 @@ func main() {
 }
 
 func checkOne(ctx context.Context, ntfy *NtfyClient, st *State, s *Source, interval time.Duration) error {
-	items, err := fetchSource(ctx, s)
+	now := time.Now().UTC()
+	items, err := fetchSource(ctx, s, now)
 	if err != nil {
 		// Surface the error to ntfy as a separate notification so the
 		// user knows the check ran but failed. Don't update state.
@@ -186,7 +187,6 @@ func checkOne(ctx context.Context, ntfy *NtfyClient, st *State, s *Source, inter
 	}
 
 	// Always remember the current set, even when nothing changes.
-	now := time.Now().UTC()
 	defer st.remember(s.ID, items, now, interval, len(added), len(removed), "")
 
 	if len(added) == 0 && len(removed) == 0 {
