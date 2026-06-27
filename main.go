@@ -145,7 +145,7 @@ func runDaemon(cfg *config.Config, st *state.State) {
 
 	ntfy := notify.New(cfg.Ntfy.Server, cfg.Ntfy.Topic)
 
-	d := daemon.NewDaemon(cfg, st, ntfy)
+	d := daemon.NewDaemon(cfg, st, ntfy, *flagVerbose)
 	d.Start(ctx)
 
 	// Start the web server (HTTP API + UI). If [web] token

@@ -37,7 +37,7 @@ func TestDaemonStartStop(t *testing.T) {
 	}
 	ntfy := notify.New("https://ntfy.sh", "test")
 
-	d := NewDaemon(cfg, st, ntfy)
+	d := NewDaemon(cfg, st, ntfy, false)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -75,7 +75,7 @@ func TestDaemonSkipsDisabledSources(t *testing.T) {
 	}
 	ntfy := notify.New("https://ntfy.sh", "test")
 
-	d := NewDaemon(cfg, st, ntfy)
+	d := NewDaemon(cfg, st, ntfy, false)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -113,7 +113,7 @@ func TestDaemonEnabledDefaultsTrue(t *testing.T) {
 	}
 	ntfy := notify.New("https://ntfy.sh", "test")
 
-	d := NewDaemon(cfg, st, ntfy)
+	d := NewDaemon(cfg, st, ntfy, false)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -181,7 +181,7 @@ func TestDaemonStopIsIdempotent(t *testing.T) {
 	}
 	ntfy := notify.New("https://ntfy.sh", "test")
 
-	d := NewDaemon(cfg, st, ntfy)
+	d := NewDaemon(cfg, st, ntfy, false)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -208,7 +208,7 @@ func TestDaemonTriggerNowUnknown(t *testing.T) {
 	d := NewDaemon(cfg, &state.State{
 		Version: state.CurrentVersion,
 		Sources: map[string]*state.SourceState{},
-	}, notify.New("https://ntfy.sh", "test"))
+	}, notify.New("https://ntfy.sh", "test"), false)
 	if err := d.TriggerNow("nope"); err == nil {
 		t.Errorf("TriggerNow on unknown source: got nil error, want error")
 	}
@@ -230,7 +230,7 @@ func TestDaemonTriggerNowKnown(t *testing.T) {
 	d := NewDaemon(cfg, &state.State{
 		Version: state.CurrentVersion,
 		Sources: map[string]*state.SourceState{},
-	}, notify.New("https://ntfy.sh", "test"))
+	}, notify.New("https://ntfy.sh", "test"), false)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	d.Start(ctx)
@@ -262,7 +262,7 @@ func TestDaemonTriggerNowIsIdempotent(t *testing.T) {
 	d := NewDaemon(cfg, &state.State{
 		Version: state.CurrentVersion,
 		Sources: map[string]*state.SourceState{},
-	}, notify.New("https://ntfy.sh", "test"))
+	}, notify.New("https://ntfy.sh", "test"), false)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	d.Start(ctx)
@@ -296,7 +296,7 @@ func TestDaemonReloadUpdatesNtfyClient(t *testing.T) {
 	}
 	st := &state.State{Version: state.CurrentVersion, Sources: map[string]*state.SourceState{}}
 	ntfy := notify.New("https://ntfy.sh", "old")
-	d := NewDaemon(cfg, st, ntfy)
+	d := NewDaemon(cfg, st, ntfy, false)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	d.Start(ctx)
@@ -325,7 +325,7 @@ func TestDaemonReloadSwapsConfig(t *testing.T) {
 		},
 	}
 	st := &state.State{Version: state.CurrentVersion, Sources: map[string]*state.SourceState{}}
-	d := NewDaemon(cfg, st, notify.New("https://ntfy.sh", "test"))
+	d := NewDaemon(cfg, st, notify.New("https://ntfy.sh", "test"), false)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	d.Start(ctx)
@@ -361,7 +361,7 @@ func TestDaemonReloadRemovesSource(t *testing.T) {
 		},
 	}
 	st := &state.State{Version: state.CurrentVersion, Sources: map[string]*state.SourceState{}}
-	d := NewDaemon(cfg, st, notify.New("https://ntfy.sh", "test"))
+	d := NewDaemon(cfg, st, notify.New("https://ntfy.sh", "test"), false)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	d.Start(ctx)
@@ -398,7 +398,7 @@ func TestDaemonReloadBeforeStartIsNoOp(t *testing.T) {
 	d := NewDaemon(cfg, &state.State{
 		Version: state.CurrentVersion,
 		Sources: map[string]*state.SourceState{},
-	}, notify.New("https://ntfy.sh", "test"))
+	}, notify.New("https://ntfy.sh", "test"), false)
 	// Must not panic.
 	d.Reload(cfg)
 }

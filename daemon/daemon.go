@@ -30,9 +30,10 @@ import (
 // everything. TriggerNow is the per-source "run immediately"
 // API used by the web UI's "Run now" button.
 type Daemon struct {
-	cfg  *config.Config
-	st   *state.State
-	ntfy *notify.Client
+	cfg     *config.Config
+	st      *state.State
+	ntfy    *notify.Client
+	verbose bool
 
 	// parentCtx is the context passed to Start. It's stored so
 	// that Reload (triggered by the config watcher) can derive
@@ -63,12 +64,14 @@ type sourceRunner struct {
 
 // NewDaemon constructs a Daemon. The ntfy client is mutated
 // in place by Reload; pass a freshly-constructed notify.Client
-// here.
-func NewDaemon(cfg *config.Config, st *state.State, ntfy *notify.Client) *Daemon {
+// here. verbose enables the per-tick log lines that name the
+// source ID and item counts.
+func NewDaemon(cfg *config.Config, st *state.State, ntfy *notify.Client, verbose bool) *Daemon {
 	return &Daemon{
 		cfg:     cfg,
 		st:      st,
 		ntfy:    ntfy,
+		verbose: verbose,
 		runners: make(map[string]*sourceRunner),
 	}
 }
@@ -212,7 +215,7 @@ func (d *Daemon) runOnce(ctx context.Context, s *source.Source, r *sourceRunner,
 		d.saveState()
 		return
 	}
-	if err := check.One(ctx, d.ntfy, d.st, s, items, now, next(now), false); err != nil {
+	if err := check.One(ctx, d.ntfy, d.st, s, items, now, next(now), d.verbose); err != nil {
 		log.Printf("[%s] check failed: %v", s.ID, err)
 	}
 	d.saveState()

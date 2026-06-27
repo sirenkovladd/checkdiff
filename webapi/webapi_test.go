@@ -34,7 +34,7 @@ func newTestWebServer(t *testing.T, token string) *Server {
 	d := daemon.NewDaemon(cfg, &state.State{
 		Version: state.CurrentVersion,
 		Sources: map[string]*state.SourceState{},
-	}, notify.New("https://ntfy.sh", "test"))
+	}, notify.New("https://ntfy.sh", "test"), false)
 	st := &state.State{
 		Version: state.CurrentVersion,
 		Sources: map[string]*state.SourceState{
