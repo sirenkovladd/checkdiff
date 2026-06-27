@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -101,6 +102,27 @@ type Source struct {
 	// Today this is loaded and validated but not yet used for
 	// scheduling — the daemon-mode scheduler is the next step.
 	CheckInterval string `toml:"check_interval,omitempty"`
+}
+
+// ResolvedInterval returns the effective polling interval for this
+// source: the per-source CheckInterval if set, otherwise the
+// supplied global default. The return value is a Go duration
+// string ("1h", "30m", "10m", etc.) — callers are expected to
+// parse it with time.ParseDuration.
+//
+// Whitespace-only per-source values are treated as empty so that
+// the global default is used. This is defensive — the loader
+// rejects whitespace-only values as invalid durations, but the
+// helper stays self-consistent regardless.
+//
+// This is a pure helper; the daemon-mode scheduler (the next
+// implementation step) will call it when picking a per-source
+// ticker interval.
+func (s *Source) ResolvedInterval(globalDefault string) string {
+	if v := strings.TrimSpace(s.CheckInterval); v != "" {
+		return v
+	}
+	return globalDefault
 }
 
 func loadConfig(path string) (*Config, error) {

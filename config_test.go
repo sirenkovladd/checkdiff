@@ -113,3 +113,25 @@ url  = "https://example.com"
 		t.Errorf("loadConfig with valid Go-duration global interval: got %v, want nil", err)
 	}
 }
+
+func TestSourceResolvedInterval(t *testing.T) {
+	cases := []struct {
+		name         string
+		checkField   string
+		globalDefault string
+		want         string
+	}{
+		{"per-source wins over global", "30m", "1h", "30m"},
+		{"falls back to global when per-source is empty", "", "1h", "1h"},
+		{"falls back to global when per-source is whitespace", "   ", "1h", "1h"},
+		{"per-source wins even when global is empty", "5m", "", "5m"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := &Source{CheckInterval: c.checkField}
+			if got := s.ResolvedInterval(c.globalDefault); got != c.want {
+				t.Errorf("ResolvedInterval(%q) = %q, want %q", c.globalDefault, got, c.want)
+			}
+		})
+	}
+}
