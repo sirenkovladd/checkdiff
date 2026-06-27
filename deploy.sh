@@ -16,21 +16,12 @@ REMOTE_BIN='~/bin/checkdiff'
 REMOTE_CONFIG='~/.config/checkdiff/config.toml'
 REMOTE_SERVICE='~/.config/systemd/user/checkdiff.service'
 
-# Local paths. The config default mirrors checkdiff's own default
-# (see -config flag in main.go), so `./deploy.sh` with no args does
-# the obvious thing. Pass a path to override:
-#   ./deploy.sh ./staging.toml
+# Local paths. The config is intentionally not deployed from here —
+# manage it directly on the server (e.g. via the web UI / API, or
+# by hand). This script ships the binary and the systemd unit, then
+# restarts the service.
 LOCAL_BIN="bin/checkdiff"
-LOCAL_CONFIG="${1:-$HOME/.config/checkdiff/config.toml}"
 LOCAL_SERVICE="contrib/checkdiff.service"
-
-if [ ! -f "$LOCAL_CONFIG" ]; then
-  echo "error: config not found at $LOCAL_CONFIG" >&2
-  echo "  pass it as the first arg, or let the daemon generate one on first run." >&2
-  echo "  (run the binary on the target host with no flags — the first-run" >&2
-  echo "   experience auto-generates a config with a random token.)" >&2
-  exit 1
-fi
 
 if [ ! -x "$LOCAL_BIN" ]; then
   echo "error: $LOCAL_BIN not found or not executable; run 'make build' first" >&2
@@ -47,7 +38,6 @@ GOOS=linux GOARCH=amd64 go build -trimpath -o "$LOCAL_BIN" .
 
 # Compute local SHA-256 (always 64 hex chars).
 LOCAL_BIN_SHA=$(shasum -a 256 "$LOCAL_BIN" | awk '{print $1}')
-LOCAL_CONFIG_SHA=$(shasum -a 256 "$LOCAL_CONFIG" | awk '{print $1}')
 LOCAL_SERVICE_SHA=$(shasum -a 256 "$LOCAL_SERVICE" | awk '{print $1}')
 
 # get_remote_sha <remote-path> echoes the remote SHA-256, or an empty
@@ -68,16 +58,13 @@ get_remote_sha() {
 }
 
 REMOTE_BIN_SHA=$(get_remote_sha "$REMOTE_BIN")
-REMOTE_CONFIG_SHA=$(get_remote_sha "$REMOTE_CONFIG")
 REMOTE_SERVICE_SHA=$(get_remote_sha "$REMOTE_SERVICE")
 
 # Decide which files to deploy. Anything whose local hash differs from
 # the remote hash (including a missing remote file) is on the list.
 bin_action="unchanged"
-config_action="unchanged"
 service_action="unchanged"
 [ "$LOCAL_BIN_SHA"     != "$REMOTE_BIN_SHA"     ] && bin_action="will deploy"
-[ "$LOCAL_CONFIG_SHA"  != "$REMOTE_CONFIG_SHA"  ] && config_action="will deploy"
 [ "$LOCAL_SERVICE_SHA" != "$REMOTE_SERVICE_SHA" ] && service_action="will deploy"
 
 short_sha() { echo "${1:0:8}"; }
@@ -91,13 +78,6 @@ else
   printf "  %-7s  local %s  remote (absent)     → %s\n" \
     "bin"    "$(short_sha "$LOCAL_BIN_SHA")"    "$bin_action"
 fi
-if [ -n "$REMOTE_CONFIG_SHA" ]; then
-  printf "  %-7s  local %s  remote %s  → %s\n" \
-    "config" "$(short_sha "$LOCAL_CONFIG_SHA")" "$(short_sha "$REMOTE_CONFIG_SHA")" "$config_action"
-else
-  printf "  %-7s  local %s  remote (absent)     → %s\n" \
-    "config" "$(short_sha "$LOCAL_CONFIG_SHA")" "$config_action"
-fi
 if [ -n "$REMOTE_SERVICE_SHA" ]; then
   printf "  %-7s  local %s  remote %s  → %s\n" \
     "service" "$(short_sha "$LOCAL_SERVICE_SHA")" "$(short_sha "$REMOTE_SERVICE_SHA")" "$service_action"
@@ -108,8 +88,8 @@ fi
 echo
 
 # Short-circuit: nothing to do, so don't restart the service either.
-if [ "$bin_action" = "unchanged" ] && [ "$config_action" = "unchanged" ] && [ "$service_action" = "unchanged" ]; then
-  echo "Nothing to deploy: bin, config, and service are identical on the server."
+if [ "$bin_action" = "unchanged" ] && [ "$service_action" = "unchanged" ]; then
+  echo "Nothing to deploy: bin and service are identical on the server."
   exit 0
 fi
 
@@ -117,10 +97,6 @@ fi
 [ "$bin_action" = "will deploy" ] && {
   echo "Uploading binary..."
   $SCP "$LOCAL_BIN" "$SERVER:/tmp/checkdiff"
-}
-[ "$config_action" = "will deploy" ] && {
-  echo "Uploading config..."
-  $SCP "$LOCAL_CONFIG" "$SERVER:/tmp/checkdiff-config.toml"
 }
 [ "$service_action" = "will deploy" ] && {
   echo "Uploading service..."
@@ -138,7 +114,6 @@ PRELUDE="systemctl --user stop checkdiff.service 2>/dev/null || true; \
 
 INSTALL=""
 [ "$bin_action"    = "will deploy" ] && INSTALL="${INSTALL:+${INSTALL} && }install -m 0755 /tmp/checkdiff $REMOTE_BIN"
-[ "$config_action" = "will deploy" ] && INSTALL="${INSTALL:+${INSTALL} && }install -m 0600 /tmp/checkdiff-config.toml $REMOTE_CONFIG"
 [ "$service_action" = "will deploy" ] && INSTALL="${INSTALL:+${INSTALL} && }sed -e 's|/usr/local/bin/checkdiff|$REMOTE_BIN|g' -e 's|/etc/checkdiff/config.toml|$REMOTE_CONFIG|g' /tmp/checkdiff.service > $REMOTE_SERVICE && chmod 0644 $REMOTE_SERVICE"
 
 POSTLUDE="systemctl --user daemon-reload; \
