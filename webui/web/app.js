@@ -181,6 +181,7 @@ function renderTypeFields(src) {
     github_file: ["owner", "repo", "ref", "path"],
     html: ["selector"],
     json: ["items_path", "id_field", "title_field", "link_field", "link"],
+    json_value: ["path"],
   }[type] || [];
   for (const f of fields) {
     const label = document.createElement("label");
@@ -226,6 +227,13 @@ function collectSourceForm() {
   for (const f of ["owner", "repo", "ref", "path", "selector", "items_path", "id_field", "title_field", "link_field", "link"]) {
     const el = $("#source-" + f);
     if (el && el.value) data[f] = el.value;
+  }
+  // For json_value, an empty path would fail server-side
+  // validation. Surface the field even when blank so the user
+  // gets a clear error from the server rather than a missing-
+  // field surprise.
+  if (type === "json_value" && !data.path) {
+    data.path = "";
   }
   return data;
 }
