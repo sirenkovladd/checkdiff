@@ -76,6 +76,61 @@ func TestParseJSONPathErrors(t *testing.T) {
 	}
 }
 
+func TestExtractJSONValue(t *testing.T) {
+	body := []byte(`{
+		"status": "SUCCESS",
+		"body": {
+			"button_status": {
+				"notification": "We're sorry, but this Activity is full."
+			},
+			"counter": 42,
+			"active": true
+		},
+		"list": [{"k": "v1"}, {"k": "v2"}]
+	}`)
+
+	cases := []struct {
+		name string
+		path string
+		want string
+	}{
+		{"string at nested path", "body.button_status.notification", "We're sorry, but this Activity is full."},
+		{"integer formatted without trailing zeros", "body.counter", "42"},
+		{"bool as string", "body.active", "true"},
+		{"string at root", "status", "SUCCESS"},
+		{"array index then key", "list[1].k", "v2"},
+		{"empty string is preserved", "body.button_status.notification", "We're sorry, but this Activity is full."},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := ExtractJSONValue(body, c.path)
+			if err != nil {
+				t.Fatalf("ExtractJSONValue(%q) error: %v", c.path, err)
+			}
+			if got != c.want {
+				t.Errorf("ExtractJSONValue(%q) = %q, want %q", c.path, got, c.want)
+			}
+		})
+	}
+}
+
+func TestExtractJSONValueErrors(t *testing.T) {
+	body := []byte(`{"a": {"b": [1, 2]}}`)
+	if _, err := ExtractJSONValue(body, "a.missing"); err == nil {
+		t.Errorf("missing key: got nil error, want error")
+	}
+	if _, err := ExtractJSONValue(body, "a.b[5]"); err == nil {
+		t.Errorf("out-of-range index: got nil error, want error")
+	}
+	// Object at the end of the path is not a scalar.
+	if _, err := ExtractJSONValue(body, "a"); err == nil {
+		t.Errorf("object at end: got nil error, want error")
+	}
+	if _, err := ExtractJSONValue(body, "a.b"); err == nil {
+		t.Errorf("array at end: got nil error, want error")
+	}
+}
+
 func TestExtractJSONArrayPathGrammar(t *testing.T) {
 	// Mirrors the shape of the UniUni tracking response: status/data/
 	// valid_tno[0]/spath_list.

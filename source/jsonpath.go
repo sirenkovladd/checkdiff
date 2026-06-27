@@ -7,6 +7,61 @@ import (
 	"strings"
 )
 
+// ExtractJSONValue navigates a path through a JSON document and
+// returns the scalar value at the end of the path as a string.
+// The path grammar is the same as ExtractJSONArray (object keys
+// separated by ".", array indices in "[N]"), but the leaf can
+// be a string, number, or bool rather than an array. Returns
+// an empty string and an error if the path doesn't resolve or
+// the leaf is a non-scalar (object/array). The non-scalar
+// error is deliberate: if a user configures a json_value
+// source pointing at an object, they almost certainly
+// misconfigured the path, and silently returning "" would
+// hide the bug behind a "no diff" notification.
+//
+// Used by the json_value fetcher for sources that track a
+// single field's value (e.g. an API status string) rather
+// than an array of items. Diff semantics: any change in the
+// returned string is a notification.
+func ExtractJSONValue(body []byte, path string) (string, error) {
+	var current interface{}
+	if err := json.Unmarshal(body, &current); err != nil {
+		return "", fmt.Errorf("parse JSON: %w", err)
+	}
+	steps, err := ParseJSONPath(path)
+	if err != nil {
+		return "", err
+	}
+	for i, step := range steps {
+		switch step.kind {
+		case pathKey:
+			m, ok := current.(map[string]interface{})
+			if !ok {
+				return "", fmt.Errorf("path %q: step %d: expected object before key %q", path, i+1, step.key)
+			}
+			v, ok := m[step.key]
+			if !ok {
+				return "", fmt.Errorf("path %q: step %d: key %q not found", path, i+1, step.key)
+			}
+			current = v
+		case pathIndex:
+			arr, ok := current.([]interface{})
+			if !ok {
+				return "", fmt.Errorf("path %q: step %d: expected array before index [%d]", path, i+1, step.index)
+			}
+			if step.index < 0 || step.index >= len(arr) {
+				return "", fmt.Errorf("path %q: step %d: index [%d] out of range (len=%d)", path, i+1, step.index, len(arr))
+			}
+			current = arr[step.index]
+		}
+	}
+	switch current.(type) {
+	case map[string]interface{}, []interface{}:
+		return "", fmt.Errorf("path %q: leaf is %T, not a scalar (json_value source needs a string/number/bool at the end of the path)", path, current)
+	}
+	return jsonScalarAsString(current), nil
+}
+
 // ExtractJSONArray navigates a path through a JSON document and
 // returns the raw JSON of each element of the array found at
 // the end. The path grammar is intentionally tiny:

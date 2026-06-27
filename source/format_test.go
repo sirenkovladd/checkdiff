@@ -154,3 +154,44 @@ func TestFormatNotificationItemWithoutLink(t *testing.T) {
 		t.Errorf("body should render unlinked item as plain text, got:\n%s", n.Body)
 	}
 }
+
+func TestJsonValueFormatChange(t *testing.T) {
+	// The json_value fetcher's format must surface the old
+	// and new values so the user can see exactly what
+	// changed. check.One produces a one-removed + one-added
+	// diff for single-value sources, and the format helper
+	// reads both to build the "from X to Y" body.
+	s := &Source{ID: "active", Name: "Activity 594922", Type: "json_value", URL: "https://example.com"}
+	removed := []Item{{ID: "We're sorry, but this Activity is full.", Title: "We're sorry, but this Activity is full."}}
+	added := []Item{{ID: "Open", Title: "Open"}}
+	n := jsonValueFetcher{}.Format(s, added, removed)
+	if !strings.Contains(n.Title, "Activity 594922") || !strings.Contains(n.Title, "changed") {
+		t.Errorf("title should name the source and say changed, got %q", n.Title)
+	}
+	if !strings.Contains(n.Body, "We're sorry") {
+		t.Errorf("body should show old value, got:\n%s", n.Body)
+	}
+	if !strings.Contains(n.Body, "Open") {
+		t.Errorf("body should show new value, got:\n%s", n.Body)
+	}
+	if n.Click != s.URL {
+		t.Errorf("Click = %q, want %q", n.Click, s.URL)
+	}
+}
+
+func TestJsonValueValidate(t *testing.T) {
+	// url and path are required; type defaults to "json" if
+	// missing (an existing source config) so the user's
+	// migrated entry doesn't accidentally start as
+	// json_value with no type.
+	v := jsonValueFetcher{}
+	if err := v.Validate(&Source{Type: "json_value", URL: "https://x", Path: "a.b"}); err != nil {
+		t.Errorf("validate ok case: %v", err)
+	}
+	if err := v.Validate(&Source{Type: "json_value", Path: "a.b"}); err == nil {
+		t.Errorf("missing url: got nil error, want error")
+	}
+	if err := v.Validate(&Source{Type: "json_value", URL: "https://x"}); err == nil {
+		t.Errorf("missing path: got nil error, want error")
+	}
+}

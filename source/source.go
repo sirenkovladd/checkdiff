@@ -178,6 +178,7 @@ var registry = map[string]Fetcher{
 	"github_file": githubFileFetcher{},
 	"html":        htmlFetcher{},
 	"json":        jsonFetcher{},
+	"json_value":  jsonValueFetcher{},
 }
 
 // SupportedTypes returns the registered type names, useful for
