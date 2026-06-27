@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -225,4 +226,77 @@ func TestWriteConfigFileRoundTrip(t *testing.T) {
 	if len(loaded2.Sources) != 1 || loaded2.Sources[0].ID != "a" {
 		t.Errorf("round-trip: sources lost or reordered: %+v", loaded2.Sources)
 	}
+}
+
+// TestConfigJSONWireShape pins the JSON keys the web UI reads
+// from /api/config (config.ntfy.server, config.check.interval,
+// etc.). Without json tags on the Config struct, Go's default
+// JSON encoder uses the Go field name (PascalCase), so the UI
+// would see config.Ntfy.Server and the fields it expects would
+// be empty. If this test fails, the settings dialog will look
+// empty in the browser.
+func TestConfigJSONWireShape(t *testing.T) {
+	cfg := &Config{
+		Ntfy:  NtfyConfig{Server: "https://ntfy.sh", Topic: "topic"},
+		Check: CheckConfig{Interval: "10m"},
+		Web:   WebConfig{Listen: "127.0.0.1:8765", Token: "secret"},
+		Sources: []source.Source{
+			{ID: "a", Name: "a", Type: "json", URL: "https://example.com/a"},
+		},
+	}
+	b, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	// Top-level keys must be lowercase, matching what the UI reads.
+	for _, want := range []string{"ntfy", "check", "web", "sources"} {
+		if _, ok := got[want]; !ok {
+			t.Errorf("top-level key %q missing; got keys: %v", want, keysOf(got))
+		}
+	}
+	// The PascalCase Go field names must NOT leak into the wire.
+	for _, banned := range []string{"Ntfy", "Check", "Web", "Sources"} {
+		if _, ok := got[banned]; ok {
+			t.Errorf("PascalCase key %q leaked into wire format", banned)
+		}
+	}
+	// Nested keys must be lowercase too.
+	ntfy := got["ntfy"].(map[string]interface{})
+	for _, want := range []string{"server", "topic"} {
+		if _, ok := ntfy[want]; !ok {
+			t.Errorf("ntfy.%s missing; got keys: %v", want, keysOf(ntfy))
+		}
+	}
+	check := got["check"].(map[string]interface{})
+	if _, ok := check["interval"]; !ok {
+		t.Errorf("check.check_interval missing; got keys: %v", keysOf(check))
+	}
+	web := got["web"].(map[string]interface{})
+	for _, want := range []string{"listen", "token"} {
+		if _, ok := web[want]; !ok {
+			t.Errorf("web.%s missing; got keys: %v", want, keysOf(web))
+		}
+	}
+	// Values are right.
+	if ntfy["server"].(string) != "https://ntfy.sh" {
+		t.Errorf("ntfy.server = %v", ntfy["server"])
+	}
+	if check["interval"].(string) != "10m" {
+		t.Errorf("check.check_interval = %v", check["interval"])
+	}
+	if web["token"].(string) != "secret" {
+		t.Errorf("web.token = %v (handleConfig is supposed to mask this to ****)", web["token"])
+	}
+}
+
+func keysOf(m map[string]interface{}) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }
