@@ -193,3 +193,84 @@ func TestDaemonStopIsIdempotent(t *testing.T) {
 		t.Errorf("second Stop did not return within 2s (likely deadlocked)")
 	}
 }
+
+func TestDaemonTriggerNowUnknown(t *testing.T) {
+	cfg := &Config{
+		Check: CheckConfig{Interval: "1h"},
+		Sources: []Source{},
+	}
+	d := newDaemon(cfg, &State{
+		Version: currentStateVersion,
+		Sources: map[string]*SourceState{},
+	}, NewNtfyClient("https://ntfy.sh", "test"))
+	if err := d.TriggerNow("nope"); err == nil {
+		t.Errorf("TriggerNow on unknown source: got nil error, want error")
+	}
+}
+
+func TestDaemonTriggerNowKnown(t *testing.T) {
+	// TriggerNow on a known source must return immediately (not
+	// block on the check completing). The check itself runs in
+	// the goroutine and will fail with a connection error since
+	// 127.0.0.1:1 is unused — that's fine, the test is about
+	// the non-blocking send to runNowCh.
+	enabled := true
+	cfg := &Config{
+		Check: CheckConfig{Interval: "1h"},
+		Sources: []Source{
+			{ID: "x", Name: "x", Type: "json", URL: "https://127.0.0.1:1", Enabled: &enabled},
+		},
+	}
+	d := newDaemon(cfg, &State{
+		Version: currentStateVersion,
+		Sources: map[string]*SourceState{},
+	}, NewNtfyClient("https://ntfy.sh", "test"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d.Start(ctx)
+	defer d.Stop()
+
+	done := make(chan error, 1)
+	go func() { done <- d.TriggerNow("x") }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("TriggerNow on known source: got %v, want nil", err)
+		}
+	case <-time.After(time.Second):
+		t.Errorf("TriggerNow did not return within 1s (likely blocked)")
+	}
+}
+
+func TestDaemonTriggerNowIsIdempotent(t *testing.T) {
+	// A second TriggerNow while the first is in flight must not
+	// block: the runNowCh channel is buffered to size 1, so the
+	// second send is silently dropped.
+	enabled := true
+	cfg := &Config{
+		Check: CheckConfig{Interval: "1h"},
+		Sources: []Source{
+			{ID: "x", Name: "x", Type: "json", URL: "https://127.0.0.1:1", Enabled: &enabled},
+		},
+	}
+	d := newDaemon(cfg, &State{
+		Version: currentStateVersion,
+		Sources: map[string]*SourceState{},
+	}, NewNtfyClient("https://ntfy.sh", "test"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d.Start(ctx)
+	defer d.Stop()
+
+	// Two rapid triggers. Both must return immediately.
+	done := make(chan struct{}, 2)
+	go func() { _ = d.TriggerNow("x"); done <- struct{}{} }()
+	go func() { _ = d.TriggerNow("x"); done <- struct{}{} }()
+	for i := 0; i < 2; i++ {
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Errorf("TriggerNow #%d did not return within 1s (likely blocked)", i+1)
+		}
+	}
+}

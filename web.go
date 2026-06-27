@@ -187,11 +187,16 @@ func (w *webServer) handleSourceByID(rw http.ResponseWriter, r *http.Request) {
 	}
 	// /api/sources/{id}/run
 	if strings.HasSuffix(id, "/run") {
-		// The actual trigger-now logic is layered on in a later
-		// step (the daemon doesn't yet expose a "run this source
-		// once" entry point). For now we return 501 so the UI can
-		// be wired up against the right shape.
-		http.Error(rw, "run-now not yet implemented", http.StatusNotImplemented)
+		sourceID := strings.TrimSuffix(id, "/run")
+		if r.Method != http.MethodPost {
+			http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if err := w.daemon.TriggerNow(sourceID); err != nil {
+			http.Error(rw, err.Error(), http.StatusNotFound)
+			return
+		}
+		rw.WriteHeader(http.StatusAccepted)
 		return
 	}
 	switch r.Method {

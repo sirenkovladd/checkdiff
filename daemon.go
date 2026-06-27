@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -29,6 +30,12 @@ type daemon struct {
 type sourceRunner struct {
 	cancel context.CancelFunc
 	done   chan struct{}
+	// runNowCh is a buffered channel (size 1) that the web API
+	// handler sends to in order to trigger an immediate check
+	// for this source, bypassing the ticker. The non-blocking
+	// send means a second "run now" while a check is in flight
+	// is silently dropped (the running check already covers it).
+	runNowCh chan struct{}
 	// interval is cached at start time so a config reload that
 	// changes the interval only takes effect after the runner
 	// is restarted (cancel + start).
@@ -76,6 +83,7 @@ func (d *daemon) startOne(parent context.Context, s *Source, interval time.Durat
 	r := &sourceRunner{
 		cancel:   cancel,
 		done:     make(chan struct{}),
+		runNowCh: make(chan struct{}, 1),
 		interval: interval,
 	}
 	d.mu.Lock()
@@ -106,7 +114,35 @@ func (d *daemon) runSource(ctx context.Context, s *Source, r *sourceRunner, inte
 			if err := checkOne(ctx, d.ntfy, d.st, s, interval); err != nil {
 				log.Printf("[%s] check failed: %v", s.ID, err)
 			}
+		case <-r.runNowCh:
+			// Non-blocking trigger from the web API. The channel
+			// is buffered (size 1) so a second "run now" while
+			// this one is in flight is dropped silently.
+			if err := checkOne(ctx, d.ntfy, d.st, s, interval); err != nil {
+				log.Printf("[%s] check failed: %v", s.ID, err)
+			}
 		}
+	}
+}
+
+// TriggerNow signals the given source's goroutine to run an
+// immediate check. Returns an error if the source is not known
+// to the daemon (e.g. disabled or never started).
+func (d *daemon) TriggerNow(id string) error {
+	d.mu.Lock()
+	r, ok := d.runners[id]
+	d.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("source %q is not running", id)
+	}
+	select {
+	case r.runNowCh <- struct{}{}:
+		return nil
+	default:
+		// Channel is full: a "run now" is already pending or a
+		// check is in flight. Treat as success — the user got
+		// their wish, just via the previous trigger.
+		return nil
 	}
 }
 
