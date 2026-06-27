@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>checkdiff</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>checkdiff</h1>
+  <nav>
+    <button id="refresh" class="action">Refresh</button>
+    <button id="settings-btn" class="action">Settings</button>
+    <button id="logout-btn" class="action">Sign out</button>
+  </nav>
+</header>
+
+<main>
+  <section id="login-section" hidden>
+    <h2>Sign in</h2>
+    <p>Enter the token from your <code>config.toml</code> (<code>[web] token</code>):</p>
+    <input type="password" id="token-input" placeholder="Token" autofocus>
+    <button id="connect-btn" class="primary">Connect</button>
+    <p id="login-error" class="error" hidden></p>
+  </section>
+
+  <section id="main-section" hidden>
+    <h2>Sources</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Name</th>
+          <th>Type</th>
+          <th>URL</th>
+          <th>Interval</th>
+          <th>Enabled</th>
+          <th>Last run</th>
+          <th>Next run</th>
+          <th>Items</th>
+          <th>Last diff</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="sources-tbody">
+        <tr><td colspan="11">Loading…</td></tr>
+      </tbody>
+    </table>
+  </section>
+</main>
+
+<dialog id="source-dialog">
+  <form id="source-form" method="dialog">
+    <h2 id="source-dialog-title">Add source</h2>
+    <label>Type
+      <select name="type" id="source-type">
+        <option value="json">json</option>
+        <option value="html">html</option>
+        <option value="github_file">github_file</option>
+      </select>
+    </label>
+    <label>ID <input name="id" id="source-id" required></label>
+    <label>Name <input name="name" id="source-name"></label>
+    <label>URL <input name="url" id="source-url"></label>
+    <label>Interval <input name="check_interval" id="source-interval" placeholder="e.g. 30m (blank = global default)"></label>
+    <label>Enabled <input type="checkbox" name="enabled" id="source-enabled" checked></label>
+    <div id="source-type-fields"></div>
+    <menu>
+      <button value="cancel">Cancel</button>
+      <button id="source-save" value="default" class="primary">Save</button>
+    </menu>
+  </form>
+</dialog>
+
+<dialog id="settings-dialog">
+  <form id="settings-form" method="dialog">
+    <h2>Settings</h2>
+    <label>ntfy server <input name="server" id="settings-server"></label>
+    <label>ntfy topic <input name="topic" id="settings-topic"></label>
+    <label>Default interval <input name="interval" id="settings-interval" placeholder="e.g. 1h"></label>
+    <p class="hint">The web token is read-only here. Edit <code>config.toml</code> directly to change it.</p>
+    <menu>
+      <button value="cancel">Cancel</button>
+      <button id="settings-save" value="default" class="primary">Save</button>
+    </menu>
+  </form>
+</dialog>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -2,14 +2,19 @@ package main
 
 import (
 	"context"
+	"embed"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 )
+
+//go:embed web/*.html web/*.css web/*.js
+var webAssets embed.FS
 
 // webServer is the HTTP surface for the daemon. It serves the JSON
 // API and (in a later step) the static web UI. Auth is enforced by
@@ -121,13 +126,25 @@ func (w *webServer) Stop() {
 	_ = srv.Shutdown(ctx)
 }
 
-// registerRoutes wires the API endpoints into the mux. The web
-// UI assets are layered on in a later step.
+// registerRoutes wires the API endpoints and the static UI
+// assets into the mux. The static assets are served from the
+// embedded web/ directory so the binary is self-contained
+// (no separate files to deploy).
 func (w *webServer) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/state", w.handleState)
 	mux.HandleFunc("/api/config", w.handleConfig)
 	mux.HandleFunc("/api/sources", w.handleSources)
 	mux.HandleFunc("/api/sources/", w.handleSourceByID)
+
+	// Static UI assets. We expose them at / so the user only
+	// needs to remember the listen address. /api/... takes
+	// precedence because it's registered first.
+	sub, err := fs.Sub(webAssets, "web")
+	if err != nil {
+		log.Printf("web: embed sub: %v", err)
+		return
+	}
+	mux.Handle("/", http.FileServer(http.FS(sub)))
 }
 
 // handleState returns the per-source runtime state. Read-only.

@@ -244,3 +244,43 @@ func TestTokenFromRequest(t *testing.T) {
 // if a future refactor drops the last caller.
 var _ = bytes.NewReader
 var _ = json.Marshal
+
+func TestWebServesStaticAssets(t *testing.T) {
+	ws := newTestWebServer(t, "secret123")
+	mux := http.NewServeMux()
+	ws.registerRoutes(mux)
+	handler := ws.authMiddleware(mux)
+
+	for _, path := range []string{"/", "/style.css", "/app.js"} {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest("GET", path, nil)
+			req.Header.Set("Authorization", "Bearer secret123")
+			rw := httptest.NewRecorder()
+			handler.ServeHTTP(rw, req)
+			if rw.Code != http.StatusOK {
+				t.Errorf("GET %s: got %d, want 200", path, rw.Code)
+			}
+			if rw.Body.Len() == 0 {
+				t.Errorf("GET %s: empty body", path)
+			}
+		})
+	}
+}
+
+func TestWebStaticAssetsRequireAuth(t *testing.T) {
+	// Static assets are gated by the same auth middleware as the
+	// API: an unauthenticated request to / must be rejected.
+	// Otherwise the login form would be served to anyone who
+	// could see the login form's first paint (which leaks nothing
+	// today, but the rule should hold for the future).
+	ws := newTestWebServer(t, "secret123")
+	mux := http.NewServeMux()
+	ws.registerRoutes(mux)
+	handler := ws.authMiddleware(mux)
+	req := httptest.NewRequest("GET", "/", nil)
+	rw := httptest.NewRecorder()
+	handler.ServeHTTP(rw, req)
+	if rw.Code != http.StatusUnauthorized {
+		t.Errorf("unauthenticated GET /: got %d, want 401", rw.Code)
+	}
+}
