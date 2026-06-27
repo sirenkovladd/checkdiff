@@ -124,6 +124,6 @@ func (htmlFetcher) Validate(s *Source) error {
 // The title and body follow the same layout the json fetcher
 // uses, so the user sees a consistent format for list-style
 // sources.
-func (htmlFetcher) Format(s *Source, added, removed []Item) Notification {
+func (htmlFetcher) Format(ctx context.Context, s *Source, added, removed []Item) Notification {
 	return formatListDiff(s, added, removed, s.URL)
 }

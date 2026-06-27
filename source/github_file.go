@@ -136,7 +136,7 @@ func (githubFileFetcher) Validate(s *Source) error {
 // git blob SHA isn't meaningful to the user, so the format
 // helper ignores it and renders the new file's title + a
 // content excerpt.
-func (githubFileFetcher) Format(s *Source, added, removed []Item) Notification {
+func (githubFileFetcher) Format(ctx context.Context, s *Source, added, removed []Item) Notification {
 	const maxBody = 3500
 	var b strings.Builder
 	fmt.Fprintf(&b, "File changed: %s\n", s.Name)
@@ -159,12 +159,50 @@ func (githubFileFetcher) Format(s *Source, added, removed []Item) Notification {
 			break
 		}
 	}
+
+	// Look up the latest commit so the notification can
+	// include the SHA, author, date, and a link straight to
+	// the commit. A lookup failure is logged but doesn't
+	// fail the notification — the body is still useful with
+	// just the file path and excerpt. A small budget caps
+	// the time we'll spend on the commit lookup so a slow
+	// gh can't stall the publish path.
+	var commitSection string
+	clickURL := s.URL
+	if cctx, cancel := context.WithTimeout(ctx, 5*time.Second); cancel != nil {
+		if commit, cerr := GetLatestCommit(cctx, s); cerr == nil && commit != nil {
+			shortSHA := commit.SHA
+			if len(shortSHA) > 7 {
+				shortSHA = shortSHA[:7]
+			}
+			firstLine := commit.Commit.Message
+			if i := strings.IndexByte(firstLine, '\n'); i >= 0 {
+				firstLine = firstLine[:i]
+			}
+			author := commit.Commit.Author.Name
+			date := commit.Commit.Author.Date
+			if len(date) >= 10 {
+				// YYYY-MM-DD only; the full timestamp is
+				// noise for a notification body.
+				date = date[:10]
+			}
+			commitSection = fmt.Sprintf(
+				"\nLast commit: %s — %s\nBy %s on %s\n%s\n",
+				shortSHA, firstLine, author, date, commit.HTMLURL,
+			)
+			clickURL = commit.HTMLURL
+		} else if cerr != nil {
+			log.Printf("[%s] commit lookup for notification body failed: %v", s.ID, cerr)
+		}
+		cancel()
+	}
+
 	return Notification{
 		Title:    fmt.Sprintf("🔔 %s: changed", s.Name),
-		Body:     b.String(),
+		Body:     b.String() + commitSection,
 		Priority: "default",
 		Tags:     "loudspeaker",
-		Click:    s.URL,
+		Click:    clickURL,
 	}
 }
 

@@ -120,7 +120,7 @@ func (jsonFetcher) Validate(s *Source) error {
 // package tracking notification opens that package's detail
 // page), falling back to the source's Link, then the source's
 // URL.
-func (jsonFetcher) Format(s *Source, added, removed []Item) Notification {
+func (jsonFetcher) Format(ctx context.Context, s *Source, added, removed []Item) Notification {
 	click := s.URL
 	if len(added) > 0 && added[0].Link != "" {
 		click = added[0].Link

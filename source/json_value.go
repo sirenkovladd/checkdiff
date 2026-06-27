@@ -116,7 +116,7 @@ func (jsonValueFetcher) Validate(s *Source) error {
 // removed (the old value) and one added (the new value),
 // and the body surfaces both so the user can see exactly
 // what changed.
-func (jsonValueFetcher) Format(s *Source, added, removed []Item) Notification {
+func (jsonValueFetcher) Format(ctx context.Context, s *Source, added, removed []Item) Notification {
 	var oldVal, newVal string
 	if len(removed) > 0 {
 		oldVal = removed[0].Title

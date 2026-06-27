@@ -169,7 +169,7 @@ type Fetcher interface {
 	// Format builds a Notification for the diff (added and/or
 	// removed items). Callers pass only items that actually
 	// changed; the format helper decides the body layout.
-	Format(s *Source, added, removed []Item) Notification
+	Format(ctx context.Context, s *Source, added, removed []Item) Notification
 }
 
 // registry maps a Source.Type string to its Fetcher. Adding a
@@ -218,7 +218,7 @@ func Validate(s *Source) error {
 // unknown type it returns a default notification (so a
 // misconfigured source still surfaces a clear error to the
 // user) rather than panicking.
-func Format(s *Source, added, removed []Item) Notification {
+func Format(ctx context.Context, s *Source, added, removed []Item) Notification {
 	f, ok := registry[s.Type]
 	if !ok {
 		return Notification{
@@ -228,5 +228,5 @@ func Format(s *Source, added, removed []Item) Notification {
 			Tags:     "loudspeaker",
 		}
 	}
-	return f.Format(s, added, removed)
+	return f.Format(ctx, s, added, removed)
 }
