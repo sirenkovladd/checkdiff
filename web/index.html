@@ -39,12 +39,13 @@
           <th>Last run</th>
           <th>Next run</th>
           <th>Items</th>
+          <th>Hash</th>
           <th>Last diff</th>
           <th>Actions</th>
         </tr>
       </thead>
       <tbody id="sources-tbody">
-        <tr><td colspan="11">Loading…</td></tr>
+        <tr><td colspan="12">Loading…</td></tr>
       </tbody>
     </table>
   </section>
@@ -82,8 +83,13 @@
     <label>ntfy topic <input name="topic" id="settings-topic"></label>
     <label>Default interval <input name="interval" id="settings-interval" placeholder="e.g. 1h"></label>
     <label>Web listen address <input name="listen" id="settings-listen" placeholder="e.g. 127.0.0.1:8080"></label>
-    <label>Web token <input name="token" id="settings-token" placeholder="leave blank to disable web UI"></label>
+    <label>Web token <input name="token" id="settings-token" placeholder="leave blank to keep current token"></label>
     <p class="hint">Token and listen changes take effect on save. Other ntfy changes take effect immediately.</p>
+    <p>
+      <button type="button" id="settings-rotate" class="action">Rotate token</button>
+      <span class="hint">Generates a new random token, writes it to <code>config.toml</code>, updates this browser's <code>localStorage</code>, and shows the new value once so you can copy it elsewhere.</span>
+    </p>
+    <p id="settings-rotated" class="hint" hidden></p>
     <p id="settings-error" class="error" hidden></p>
     <menu>
       <button value="cancel">Cancel</button>

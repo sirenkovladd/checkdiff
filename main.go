@@ -72,6 +72,18 @@ func main() {
 		log.Fatalf("state: %v", err)
 	}
 
+	// Prune state entries for sources that no longer exist in the
+	// config. Without this, deleting a source via the UI (or
+	// editing the TOML) leaves a stale entry in state.json that
+	// grows without bound. Called once at startup with the
+	// current source IDs; daemon.Reload handles the runtime
+	// case.
+	validIDs := make(map[string]bool, len(cfg.Sources))
+	for i := range cfg.Sources {
+		validIDs[cfg.Sources[i].ID] = true
+	}
+	st.Prune(validIDs)
+
 	if *flagVerbose {
 		enabled := 0
 		for i := range cfg.Sources {

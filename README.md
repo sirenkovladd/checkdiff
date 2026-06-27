@@ -60,6 +60,12 @@ The UI shows, per source:
 - **Run now** to trigger an immediate check
 - **Edit** / **Delete** / **Add** buttons
 
+The Settings dialog exposes the ntfy server/topic, the global
+interval, the web listen address, and the web token. A **Rotate
+token** button generates a new random token, writes it to
+`config.toml`, updates the browser's `localStorage`, and shows
+the new value once so the user can copy it elsewhere.
+
 All UI changes are persisted to `config.toml` and the daemon
 hot-reloads — no restart required.
 

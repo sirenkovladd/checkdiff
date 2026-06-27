@@ -14,11 +14,11 @@ import (
 // ensureConfigForDaemon checks that the config file exists and
 // is usable for daemon mode. If the file is missing, a default
 // is generated with a random token and the token is printed to
-// stdout so the user can paste it into the web UI's login form.
+// the log so the user can paste it into the web UI's login
+// form.
 //
-// This is deliberately separate from the -init flag (which is
-// for the one-shot / test workflow) and from loadConfig (which
-// only reads). A separate function makes the policy explicit:
+// This is deliberately separate from loadConfig (which only
+// reads). A separate function makes the policy explicit:
 // auto-generation happens in daemon mode only, with a clear
 // log line, and is the first thing the daemon does.
 func ensureConfigForDaemon(path string) error {

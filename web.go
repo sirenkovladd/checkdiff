@@ -29,11 +29,11 @@ var webAssets embed.FS
 // rewritten TOML and triggers a daemon Reload, so the new
 // configuration takes effect automatically.
 //
-// Concurrent writes to the config (e.g. two POSTs racing) are
-// serialized by writeMu. Without it, two handlers can both
-// append, both write the file, and one will lose its source on
-// the next load — or, worse, an interleaved slice operation
-// can panic with an out-of-range index.
+// Concurrent access to the in-memory config is serialized by mu
+// (an RWMutex): read handlers (GET /api/sources, GET /api/config)
+// take RLock; write handlers (POST/PUT/DELETE /api/sources, PUT
+// /api/settings) take Lock. Without this, a GET racing a POST
+// can read a torn slice.
 type webServer struct {
 	cfg        *Config
 	daemon     *daemon
@@ -43,8 +43,7 @@ type webServer struct {
 	token      string
 	listen     string
 	srv        *http.Server
-	mu         sync.Mutex
-	writeMu    sync.Mutex
+	mu         sync.RWMutex
 	running    bool
 }
 
@@ -68,9 +67,9 @@ func newWebServer(cfg *Config, d *daemon, st *State, configPath, statePath strin
 func (w *webServer) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		token := tokenFromRequest(r)
-		w.mu.Lock()
+		w.mu.RLock()
 		currentToken := w.token
-		w.mu.Unlock()
+		w.mu.RUnlock()
 		if token == "" || token != currentToken {
 			http.Error(rw, "unauthorized", http.StatusUnauthorized)
 			return
@@ -110,9 +109,9 @@ func (w *webServer) Start() error {
 // bind is the actual server-binding logic, shared by Start and
 // Reload (when the listen address changes).
 func (w *webServer) bind() error {
-	w.mu.Lock()
+	w.mu.RLock()
 	listen := w.listen
-	w.mu.Unlock()
+	w.mu.RUnlock()
 
 	mux := http.NewServeMux()
 	w.registerRoutes(mux)
@@ -153,6 +152,7 @@ func (w *webServer) bind() error {
 func (w *webServer) Reload(newCfg *Config) {
 	w.mu.Lock()
 	oldListen := w.listen
+	oldToken := w.token
 	w.token = newCfg.Web.Token
 	w.listen = newCfg.Web.Listen
 	w.cfg = newCfg
@@ -162,6 +162,13 @@ func (w *webServer) Reload(newCfg *Config) {
 		// Token was just cleared; stop the server entirely.
 		w.Stop()
 		return
+	}
+	if oldToken != w.token {
+		// Token changed (likely via the Settings UI). Subsequent
+		// requests will be checked against the new token; the
+		// user's browser may 401 once until the UI updates
+		// localStorage with the new value.
+		log.Printf("web token rotated")
 	}
 	if newCfg.Web.Listen != oldListen {
 		// Listen address changed; restart the server.
@@ -196,12 +203,12 @@ func (w *webServer) Stop() {
 // embedded web/ directory so the binary is self-contained
 // (no separate files to deploy).
 func (w *webServer) registerRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/api/login", w.handleLogin)
 	mux.HandleFunc("/api/state", w.handleState)
 	mux.HandleFunc("/api/config", w.handleConfig)
 	mux.HandleFunc("/api/sources", w.handleSources)
 	mux.HandleFunc("/api/sources/", w.handleSourceByID)
 	mux.HandleFunc("/api/settings", w.handleSettings)
+	mux.HandleFunc("/api/rotate-token", w.handleRotateToken)
 
 	// Static UI assets. We expose them at / so the user only
 	// needs to remember the listen address. /api/... takes
@@ -212,20 +219,6 @@ func (w *webServer) registerRoutes(mux *http.ServeMux) {
 		return
 	}
 	mux.Handle("/", http.FileServer(http.FS(sub)))
-}
-
-// handleLogin is a token-only endpoint. It exists so the web UI
-// can verify a token before storing it in localStorage without
-// pulling down the (potentially large) state response. Returns
-// 200 on match, 401 on mismatch.
-func (w *webServer) handleLogin(rw http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	// authMiddleware has already verified the token matches (we
-	// wouldn't be here otherwise). Return 200 with an empty body.
-	rw.WriteHeader(http.StatusOK)
 }
 
 // handleState returns the per-source runtime state. Read-only.
@@ -245,7 +238,9 @@ func (w *webServer) handleConfig(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	w.mu.RLock()
 	masked := *w.cfg
+	w.mu.RUnlock()
 	masked.Web.Token = "****"
 	writeJSON(rw, masked)
 }
@@ -258,7 +253,11 @@ func (w *webServer) handleConfig(rw http.ResponseWriter, r *http.Request) {
 func (w *webServer) handleSources(rw http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(rw, w.cfg.Sources)
+		w.mu.RLock()
+		out := make([]Source, len(w.cfg.Sources))
+		copy(out, w.cfg.Sources)
+		w.mu.RUnlock()
+		writeJSON(rw, out)
 	case http.MethodPost:
 		var src Source
 		if err := json.NewDecoder(r.Body).Decode(&src); err != nil {
@@ -272,25 +271,27 @@ func (w *webServer) handleSources(rw http.ResponseWriter, r *http.Request) {
 			http.Error(rw, fmt.Sprintf("validate: %v", err), http.StatusBadRequest)
 			return
 		}
+		w.mu.Lock()
 		// ID must be unique. The TOML parser doesn't enforce this
 		// in the runtime API; we check here so the user gets a
 		// clear 400 instead of a confusing reload error.
 		for _, existing := range w.cfg.Sources {
 			if existing.ID == src.ID {
+				w.mu.Unlock()
 				http.Error(rw, fmt.Sprintf("source %q already exists", src.ID), http.StatusBadRequest)
 				return
 			}
 		}
-		w.writeMu.Lock()
-		defer w.writeMu.Unlock()
 		w.cfg.Sources = append(w.cfg.Sources, src)
 		if err := writeConfigFile(w.configPath, w.cfg); err != nil {
 			// Roll back in-memory state so the UI doesn't show
 			// a source that wasn't persisted.
 			w.cfg.Sources = w.cfg.Sources[:len(w.cfg.Sources)-1]
+			w.mu.Unlock()
 			http.Error(rw, fmt.Sprintf("write config: %v", err), http.StatusInternalServerError)
 			return
 		}
+		w.mu.Unlock()
 		rw.Header().Set("Content-Type", "application/json")
 		rw.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(rw).Encode(src)
@@ -348,8 +349,7 @@ func (w *webServer) handleSourceByID(rw http.ResponseWriter, r *http.Request) {
 		// (the body's id field is ignored if it differs, to avoid
 		// the URL/Body desync footgun).
 		src.ID = id
-		w.writeMu.Lock()
-		defer w.writeMu.Unlock()
+		w.mu.Lock()
 		found := false
 		for i := range w.cfg.Sources {
 			if w.cfg.Sources[i].ID == id {
@@ -358,6 +358,7 @@ func (w *webServer) handleSourceByID(rw http.ResponseWriter, r *http.Request) {
 				if err := writeConfigFile(w.configPath, w.cfg); err != nil {
 					// Roll back.
 					w.cfg.Sources[i] = old
+					w.mu.Unlock()
 					http.Error(rw, fmt.Sprintf("write config: %v", err), http.StatusInternalServerError)
 					return
 				}
@@ -365,14 +366,14 @@ func (w *webServer) handleSourceByID(rw http.ResponseWriter, r *http.Request) {
 				break
 			}
 		}
+		w.mu.Unlock()
 		if !found {
 			http.NotFound(rw, r)
 			return
 		}
 		writeJSON(rw, src)
 	case http.MethodDelete:
-		w.writeMu.Lock()
-		defer w.writeMu.Unlock()
+		w.mu.Lock()
 		found := -1
 		for i := range w.cfg.Sources {
 			if w.cfg.Sources[i].ID == id {
@@ -381,6 +382,7 @@ func (w *webServer) handleSourceByID(rw http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if found < 0 {
+			w.mu.Unlock()
 			http.NotFound(rw, r)
 			return
 		}
@@ -389,9 +391,11 @@ func (w *webServer) handleSourceByID(rw http.ResponseWriter, r *http.Request) {
 		if err := writeConfigFile(w.configPath, w.cfg); err != nil {
 			// Roll back.
 			w.cfg.Sources = append(w.cfg.Sources[:found], append([]Source{old}, w.cfg.Sources[found:]...)...)
+			w.mu.Unlock()
 			http.Error(rw, fmt.Sprintf("write config: %v", err), http.StatusInternalServerError)
 			return
 		}
+		w.mu.Unlock()
 		rw.WriteHeader(http.StatusNoContent)
 	default:
 		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
@@ -404,6 +408,37 @@ type settingsBody struct {
 	Ntfy  *NtfyConfig  `json:"ntfy,omitempty"`
 	Check *CheckConfig `json:"check,omitempty"`
 	Web   *WebConfig   `json:"web,omitempty"`
+}
+
+// handleRotateToken generates a new random token, writes it to
+// the config file, updates the in-memory token, and returns the
+// new value to the caller (the web UI, which then stores it in
+// localStorage). The old token is invalidated immediately: the
+// next request from any client that still has the old token
+// will get 401.
+//
+// POST /api/rotate-token — body is empty; response is
+// {"token": "<new>"} as JSON.
+func (w *webServer) handleRotateToken(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	tok, err := generateToken()
+	if err != nil {
+		http.Error(rw, fmt.Sprintf("generate token: %v", err), http.StatusInternalServerError)
+		return
+	}
+	w.mu.Lock()
+	w.cfg.Web.Token = tok
+	if err := writeConfigFile(w.configPath, w.cfg); err != nil {
+		w.mu.Unlock()
+		http.Error(rw, fmt.Sprintf("write config: %v", err), http.StatusInternalServerError)
+		return
+	}
+	w.token = tok
+	w.mu.Unlock()
+	writeJSON(rw, map[string]string{"token": tok})
 }
 
 // handleSettings updates the ntfy / check / web blocks in the
@@ -427,6 +462,11 @@ func (w *webServer) handleSettings(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, fmt.Sprintf("decode: %v", err), http.StatusBadRequest)
 		return
 	}
+	// Held throughout: the lock is a writer lock because we're
+	// mutating the in-memory config (and serializing against
+	// other writers to the same file).
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if body.Ntfy != nil {
 		if body.Ntfy.Server != "" {
 			w.cfg.Ntfy.Server = body.Ntfy.Server
@@ -450,11 +490,13 @@ func (w *webServer) handleSettings(rw http.ResponseWriter, r *http.Request) {
 		}
 		// Token may legitimately be the empty string (the user
 		// wants to disable the web UI). Update unconditionally
-		// when the field is present in the request.
+		// when the field is present in the request. The
+		// settings form is responsible for distinguishing
+		// "user typed a new value" from "user left it blank to
+		// keep the current one" (the JS only sends the field
+		// when the user types something).
 		w.cfg.Web.Token = body.Web.Token
 	}
-	w.writeMu.Lock()
-	defer w.writeMu.Unlock()
 	if err := writeConfigFile(w.configPath, w.cfg); err != nil {
 		http.Error(rw, fmt.Sprintf("write config: %v", err), http.StatusInternalServerError)
 		return

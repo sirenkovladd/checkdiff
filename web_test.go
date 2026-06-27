@@ -215,30 +215,22 @@ func TestWebStartNoOpsWhenTokenEmpty(t *testing.T) {
 	ws.Stop() // should also be safe
 }
 
-func TestWebLoginEndpoint(t *testing.T) {
-	// /api/login returns 200 on a matching token and 401 on a
-	// missing/wrong one. Used by the web UI to verify the token
-	// before storing it in localStorage.
+func TestWebLoginEndpointRemoved(t *testing.T) {
+	// /api/login was removed: the UI stores the token in
+	// localStorage first, then verifies it via /api/state. A
+	// dedicated /api/login endpoint was redundant. This test is
+	// a sentinel — if you re-add /api/login, update the UI and
+	// add a real test for it.
 	ws := newTestWebServer(t, "secret123")
 	mux := http.NewServeMux()
 	ws.registerRoutes(mux)
 	handler := ws.authMiddleware(mux)
-
-	// No auth → 401.
 	req := httptest.NewRequest("GET", "/api/login", nil)
+	req.Header.Set("Authorization", "Bearer secret123")
 	rw := httptest.NewRecorder()
 	handler.ServeHTTP(rw, req)
-	if rw.Code != http.StatusUnauthorized {
-		t.Errorf("no auth: got %d, want 401", rw.Code)
-	}
-
-	// Right auth → 200.
-	req = httptest.NewRequest("GET", "/api/login", nil)
-	req.Header.Set("Authorization", "Bearer secret123")
-	rw = httptest.NewRecorder()
-	handler.ServeHTTP(rw, req)
-	if rw.Code != http.StatusOK {
-		t.Errorf("right auth: got %d, want 200", rw.Code)
+	if rw.Code != http.StatusNotFound {
+		t.Errorf("/api/login: got %d, want 404 (endpoint removed)", rw.Code)
 	}
 }
 
@@ -281,6 +273,48 @@ func TestWebSettingsPUT(t *testing.T) {
 	}
 	if diskCfg.Ntfy.Topic != "newtopic" {
 		t.Errorf("on-disk Ntfy.Topic = %q, want newtopic", diskCfg.Ntfy.Topic)
+	}
+}
+
+func TestWebRotateToken(t *testing.T) {
+	ws := newTestWebServer(t, "oldtoken")
+	rw := callAuth(ws, "POST", "/api/rotate-token", "oldtoken", "")
+	if rw.Code != http.StatusOK {
+		t.Fatalf("rotate: got %d, want 200; body=%s", rw.Code, rw.Body.String())
+	}
+	var resp struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(rw.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Token == "" {
+		t.Errorf("rotate: response token is empty")
+	}
+	if resp.Token == "oldtoken" {
+		t.Errorf("rotate: token did not change")
+	}
+	// The in-memory token is now the new one.
+	if ws.cfg.Web.Token != resp.Token {
+		t.Errorf("in-memory token = %q, want %q", ws.cfg.Web.Token, resp.Token)
+	}
+	// The old token is rejected.
+	rw2 := callAuth(ws, "GET", "/api/state", "oldtoken", "")
+	if rw2.Code != http.StatusUnauthorized {
+		t.Errorf("old token after rotate: got %d, want 401", rw2.Code)
+	}
+	// The new token works.
+	rw3 := callAuth(ws, "GET", "/api/state", resp.Token, "")
+	if rw3.Code != http.StatusOK {
+		t.Errorf("new token after rotate: got %d, want 200", rw3.Code)
+	}
+	// The on-disk config reflects the new token.
+	disk, err := loadConfig(ws.configPath)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if disk.Web.Token != resp.Token {
+		t.Errorf("on-disk token = %q, want %q", disk.Web.Token, resp.Token)
 	}
 }
 

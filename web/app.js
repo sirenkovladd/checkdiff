@@ -99,6 +99,12 @@ function renderSources(sources, state) {
     tr.appendChild(td(s.last_run ? new Date(s.last_run).toLocaleString() : "—"));
     tr.appendChild(td(s.next_run ? new Date(s.next_run).toLocaleString() : "—"));
     tr.appendChild(td(s.items_count != null ? String(s.items_count) : "—"));
+    // items_hash is "sha256:<64 hex chars>". The first 8 hex
+    // chars after the prefix are plenty for a visual fingerprint;
+    // the full hash is in the API response if the user needs it.
+    const fullHash = s.items_hash || "";
+    const shortHash = fullHash.startsWith("sha256:") ? fullHash.slice(7, 15) : (fullHash ? fullHash.slice(0, 8) : "—");
+    tr.appendChild(td(shortHash, { title: fullHash || "no hash yet" }));
     tr.appendChild(td(`+${s.last_added || 0} / -${s.last_removed || 0}`));
     const actions = document.createElement("td");
     const runBtn = btn("Run now", () => runNow(src.id));
@@ -110,7 +116,7 @@ function renderSources(sources, state) {
     if (s.last_error) {
       const errRow = document.createElement("tr");
       const errCell = document.createElement("td");
-      errCell.colSpan = 11;
+      errCell.colSpan = 12;
       errCell.className = "error";
       errCell.textContent = "Error: " + s.last_error;
       errRow.appendChild(errCell);
@@ -119,9 +125,14 @@ function renderSources(sources, state) {
   }
 }
 
-function td(text) {
+function td(text, attrs) {
   const e = document.createElement("td");
   e.textContent = text;
+  if (attrs) {
+    for (const k of Object.keys(attrs)) {
+      e.setAttribute(k, attrs[k]);
+    }
+  }
   return e;
 }
 
@@ -223,8 +234,34 @@ $("#settings-btn").addEventListener("click", () => {
   // leaves the existing token alone). The masked value from
   // /api/config is "****" so we can't pre-fill.
   $("#settings-token").value = "";
+  $("#settings-rotated").hidden = true;
   $("#settings-error").hidden = true;
   $("#settings-dialog").showModal();
+});
+
+$("#settings-rotate").addEventListener("click", async () => {
+  // Confirm before rotating — the old token is invalidated
+  // immediately and any other browser signed in will be
+  // signed out on their next request.
+  if (!confirm("Rotate the web token? Other browsers signed in with the current token will be signed out.")) {
+    return;
+  }
+  try {
+    const resp = await api("/api/rotate-token", { method: "POST" });
+    if (resp && resp.token) {
+      // Persist in this browser immediately so the next API
+      // call doesn't 401.
+      localStorage.setItem(TOKEN_KEY, resp.token);
+      $("#settings-token").value = "";
+      const el = $("#settings-rotated");
+      el.textContent = "New token: " + resp.token + " (copy it now — this is the only time it will be shown)";
+      el.hidden = false;
+    }
+  } catch (err) {
+    const el = $("#settings-error");
+    el.textContent = err.message;
+    el.hidden = false;
+  }
 });
 
 $("#settings-form").addEventListener("submit", async (e) => {

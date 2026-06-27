@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 )
@@ -104,13 +105,24 @@ func (d *daemon) Reload(newCfg *Config) {
 	// the fsnotify watcher to fire) take effect without a
 	// daemon restart.
 	if d.ntfy != nil {
-		d.ntfy.Server = newCfg.Ntfy.Server
+		// TrimRight matches NewNtfyClient so changing the
+		// server URL via the UI doesn't leave a stray
+		// trailing slash that produces "https://ntfy.sh//topic"
+		// at publish time.
+		d.ntfy.Server = strings.TrimRight(newCfg.Ntfy.Server, "/")
 		d.ntfy.Topic = newCfg.Ntfy.Topic
 	}
 	d.mu.Unlock()
 	if parent == nil {
 		return
 	}
+	// Drop state entries for sources that no longer exist. Keeps
+	// state.json from accumulating orphans across reloads.
+	validIDs := make(map[string]bool, len(newCfg.Sources))
+	for i := range newCfg.Sources {
+		validIDs[newCfg.Sources[i].ID] = true
+	}
+	d.st.Prune(validIDs)
 	d.Start(parent)
 }
 

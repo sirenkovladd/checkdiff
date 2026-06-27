@@ -33,7 +33,17 @@ const currentStateVersion = 2
 //     daemon needs this to call saveState() from contexts (the
 //     per-source goroutines, hot-reload, etc.) that don't have
 //     the path passed in. It's not serialized.
+//
+// mu guards the Sources map. Multiple per-source goroutines
+// (one per enabled source) call remember/recordError concurrently
+// while the web handler reads via All() — every read and write
+// of the map (or any *SourceState value it points to) must
+// happen under mu. RWMutex is the right primitive: reads
+// (web /api/state, the per-goroutine "have I run before" check
+// in checkOne) are much more frequent than writes (one per
+// check, which is on the order of seconds).
 type State struct {
+	mu      sync.RWMutex
 	Version int                     `json:"version"`
 	LastRun time.Time               `json:"last_run"`
 	Sources map[string]*SourceState `json:"sources"`
@@ -147,7 +157,33 @@ func loadState(path string) (*State, error) {
 		}
 	}
 
+	// Prune state entries for sources that no longer exist in the
+	// config. The daemon calls Prune() once at startup with the
+	// current set of source IDs; runtime removals are handled by
+	// daemon.Reload (which calls Prune synchronously after the
+	// reconcile). Without this, state.json grows without bound as
+	// sources come and go.
+	//
+	// loadState itself doesn't know which source IDs are valid —
+	// the config is loaded separately — so the pruning step lives
+	// in its own method.
+
 	return s, nil
+}
+
+// Prune removes state entries for source IDs that are not in
+// the supplied set. Called at startup (with the config's source
+// IDs) and after every config reload (with the new config's
+// source IDs). Locked because it can be called from the
+// hot-reload path while per-source goroutines are running.
+func (s *State) Prune(validIDs map[string]bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id := range s.Sources {
+		if !validIDs[id] {
+			delete(s.Sources, id)
+		}
+	}
 }
 
 // isLegacyHTMLID reports whether k matches the old html item-ID
@@ -176,13 +212,64 @@ func isLegacyHTMLID(k string) bool {
 // inconsistent state on disk.
 var saveStateMu sync.Mutex
 
+// saveStateSnapshot is a deep-copy representation of State used
+// only as the source of truth for the JSON encoder. We pass it
+// to json.MarshalIndent so the encoder iterates over a stable
+// copy rather than the live, concurrently-mutated map.
+type saveStateSnapshot struct {
+	Version int                                  `json:"version"`
+	LastRun time.Time                            `json:"last_run"`
+	Sources map[string]*saveStateSourceSnapshot  `json:"sources"`
+}
+
+type saveStateSourceSnapshot struct {
+	ItemsSeen   map[string]bool `json:"items_seen"`
+	LastRun     time.Time       `json:"last_run,omitempty"`
+	NextRun     time.Time       `json:"next_run,omitempty"`
+	LastError   string          `json:"last_error,omitempty"`
+	LastAdded   int             `json:"last_added,omitempty"`
+	LastRemoved int             `json:"last_removed,omitempty"`
+	ItemsHash   string          `json:"items_hash,omitempty"`
+	ItemsCount  int             `json:"items_count,omitempty"`
+}
+
 func saveState(path string, s *State) error {
 	saveStateMu.Lock()
 	defer saveStateMu.Unlock()
+	// Snapshot under the state lock so concurrent per-source
+	// goroutines (which call remember / recordError) can't
+	// mutate the map while the JSON encoder iterates it.
+	s.mu.RLock()
+	snap := saveStateSnapshot{
+		Version: s.Version,
+		LastRun: s.LastRun,
+		Sources: make(map[string]*saveStateSourceSnapshot, len(s.Sources)),
+	}
+	for id, src := range s.Sources {
+		cp := saveStateSourceSnapshot{
+			LastRun:     src.LastRun,
+			NextRun:     src.NextRun,
+			LastError:   src.LastError,
+			LastAdded:   src.LastAdded,
+			LastRemoved: src.LastRemoved,
+			ItemsHash:   src.ItemsHash,
+			ItemsCount:  src.ItemsCount,
+		}
+		if src.ItemsSeen != nil {
+			cp.ItemsSeen = make(map[string]bool, len(src.ItemsSeen))
+			for k, v := range src.ItemsSeen {
+				cp.ItemsSeen[k] = v
+			}
+		} else {
+			cp.ItemsSeen = map[string]bool{}
+		}
+		snap.Sources[id] = &cp
+	}
+	s.mu.RUnlock()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	b, err := json.MarshalIndent(s, "", "  ")
+	b, err := json.MarshalIndent(snap, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -197,7 +284,13 @@ func saveState(path string, s *State) error {
 // map values are deep copies, so callers can mutate the returned
 // map without affecting the in-memory state. The web UI's
 // /api/state handler is the primary consumer.
+//
+// Called from web handlers (concurrent with per-source goroutines
+// that call remember/recordError), so the read is guarded by the
+// state mutex.
 func (s *State) All() map[string]*SourceState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	out := make(map[string]*SourceState, len(s.Sources))
 	for id, src := range s.Sources {
 		cp := *src
@@ -220,6 +313,9 @@ func (s *State) All() map[string]*SourceState {
 //
 // ItemsHash is computed from the sorted item IDs so the web UI
 // can show a stable fingerprint of the current set.
+//
+// Called from per-source goroutines, which can run concurrently.
+// The Sources map mutation is guarded by the state mutex.
 func (s *State) remember(sourceID string, items []Item, now, nextRun time.Time, added, removed int, lastErr string) {
 	seen := make(map[string]bool, len(items))
 	ids := make([]string, 0, len(items))
@@ -248,7 +344,9 @@ func (s *State) remember(sourceID string, items []Item, now, nextRun time.Time, 
 		ItemsHash:  "sha256:" + hex.EncodeToString(h.Sum(nil)),
 		ItemsCount: len(items),
 	}
+	s.mu.Lock()
 	s.Sources[sourceID] = src
+	s.mu.Unlock()
 }
 
 // recordError updates only the operational fields (timestamps,
@@ -259,7 +357,12 @@ func (s *State) remember(sourceID string, items []Item, now, nextRun time.Time, 
 //
 // If the source has no state yet, a minimal SourceState is
 // created so the web UI can show the error from the first run.
+//
+// Called from per-source goroutines, which can run concurrently.
+// The Sources map mutation is guarded by the state mutex.
 func (s *State) recordError(sourceID string, now, nextRun time.Time, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	src, ok := s.Sources[sourceID]
 	if !ok {
 		src = &SourceState{

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"testing"
 	"time"
 )
@@ -91,7 +92,99 @@ func TestStateRememberHashPrefix(t *testing.T) {
 	}
 }
 
-// errSentinel is a small fixed error for the recordError tests.
+func TestStateLoadV1MigratesToV2(t *testing.T) {
+	// Earlier versions stored per-source state as
+	// map[string]map[string]bool (just the items_seen set).
+	// The current code stores it as map[string]*SourceState
+	// (items_seen plus per-source runtime fields). The on-disk
+	// format is versioned and migrated transparently on load.
+	v1 := `{
+  "version": 1,
+  "last_run": "2026-01-01T00:00:00Z",
+  "sources": {
+    "a": {"x": true, "y": true},
+    "b": {"only": true}
+  }
+}`
+	path := t.TempDir() + "/state.json"
+	if err := os.WriteFile(path, []byte(v1), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	st, err := loadState(path)
+	if err != nil {
+		t.Fatalf("loadState: %v", err)
+	}
+	if st.Version != currentStateVersion {
+		t.Errorf("Version = %d, want %d", st.Version, currentStateVersion)
+	}
+	if st.LastRun.IsZero() {
+		t.Errorf("LastRun not preserved across migration")
+	}
+	if got := st.Sources["a"]; got == nil {
+		t.Fatalf("source a missing after migration")
+	} else if !got.ItemsSeen["x"] || !got.ItemsSeen["y"] {
+		t.Errorf("a.ItemsSeen = %v, want {x, y}", got.ItemsSeen)
+	} else if len(got.ItemsSeen) != 2 {
+		t.Errorf("a.ItemsSeen has %d entries, want 2", len(got.ItemsSeen))
+	}
+	if got := st.Sources["b"]; got == nil || !got.ItemsSeen["only"] {
+		t.Errorf("b not migrated correctly: %+v", got)
+	}
+}
+
+func TestStateLoadV2RoundTrips(t *testing.T) {
+	// The current v2 format should load without migration.
+	v2 := `{
+  "version": 2,
+  "last_run": "2026-01-01T00:00:00Z",
+  "sources": {
+    "a": {
+      "items_seen": {"x": true},
+      "items_count": 1,
+      "items_hash": "sha256:abc"
+    }
+  }
+}`
+	path := t.TempDir() + "/state.json"
+	if err := os.WriteFile(path, []byte(v2), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	st, err := loadState(path)
+	if err != nil {
+		t.Fatalf("loadState: %v", err)
+	}
+	if got := st.Sources["a"]; got == nil {
+		t.Fatalf("source a missing")
+	} else {
+		if got.ItemsHash != "sha256:abc" {
+			t.Errorf("ItemsHash = %q, want sha256:abc", got.ItemsHash)
+		}
+		if got.ItemsCount != 1 {
+			t.Errorf("ItemsCount = %d, want 1", got.ItemsCount)
+		}
+	}
+}
+
+func TestStatePruneRemovesOrphans(t *testing.T) {
+	st := &State{
+		Version: currentStateVersion,
+		Sources: map[string]*SourceState{
+			"keep":  {ItemsSeen: map[string]bool{"x": true}},
+			"drop1": {ItemsSeen: map[string]bool{"y": true}},
+			"drop2": {ItemsSeen: map[string]bool{"z": true}},
+		},
+	}
+	st.Prune(map[string]bool{"keep": true})
+	if _, ok := st.Sources["keep"]; !ok {
+		t.Errorf("Prune removed 'keep' (it should have been preserved)")
+	}
+	if _, ok := st.Sources["drop1"]; ok {
+		t.Errorf("Prune did not remove 'drop1'")
+	}
+	if _, ok := st.Sources["drop2"]; ok {
+		t.Errorf("Prune did not remove 'drop2'")
+	}
+}
 // Using a sentinel keeps the test output deterministic.
 var errSentinel = &sentinelErr{}
 
