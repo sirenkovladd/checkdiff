@@ -62,9 +62,59 @@ type State struct {
 // SourceState is the per-source runtime state. It composes a
 // Baseline and a Record so the diff code and the operational
 // code can be changed independently.
+//
+// The in-memory split is invisible to both the on-disk shape
+// and the JSON wire format: MarshalJSON emits the same flat
+// v2 shape that was on disk before the split, so existing
+// state files and the web UI's field names (s.last_run,
+// s.items_count, etc.) keep working. The split is a deepening
+// of the in-memory struct, not a contract change.
 type SourceState struct {
 	Baseline *Baseline
 	Record   *Record
+}
+
+// MarshalJSON flattens the in-memory Baseline/Record split
+// into the on-wire v2 shape. The fields are emitted in the
+// same order the original flat struct used, so JSON
+// comparisons against pre-split state files produce stable
+// output. Nil Baseline/Record are treated as zero values so a
+// freshly-loaded state that hasn't been touched yet still
+// serialises to a coherent (if empty) object.
+func (s *SourceState) MarshalJSON() ([]byte, error) {
+	type wire struct {
+		ItemsSeen   map[string]bool `json:"items_seen,omitempty"`
+		ItemsHash   string          `json:"items_hash,omitempty"`
+		ItemsCount  int             `json:"items_count,omitempty"`
+		LastRun     string          `json:"last_run,omitempty"`
+		NextRun     string          `json:"next_run,omitempty"`
+		LastError   string          `json:"last_error,omitempty"`
+		LastAdded   int             `json:"last_added,omitempty"`
+		LastRemoved int             `json:"last_removed,omitempty"`
+	}
+	var w wire
+	if s != nil {
+		if s.Baseline != nil {
+			w.ItemsSeen = s.Baseline.ItemsSeen
+			w.ItemsHash = s.Baseline.ItemsHash
+			w.ItemsCount = s.Baseline.ItemsCount
+		}
+		if s.Record != nil {
+			if !s.Record.LastRun.IsZero() {
+				w.LastRun = s.Record.LastRun.UTC().Format(time.RFC3339)
+			}
+			if !s.Record.NextRun.IsZero() {
+				w.NextRun = s.Record.NextRun.UTC().Format(time.RFC3339)
+			}
+			w.LastError = s.Record.LastError
+			w.LastAdded = s.Record.LastAdded
+			w.LastRemoved = s.Record.LastRemoved
+		}
+	}
+	if w.ItemsSeen == nil {
+		w.ItemsSeen = map[string]bool{}
+	}
+	return json.Marshal(w)
 }
 
 // Load reads state from path. Missing file is not an error —

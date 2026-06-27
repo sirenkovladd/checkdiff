@@ -3,25 +3,33 @@ Description=checkdiff daemon
 # Network is needed for fetching source URLs and publishing to
 # ntfy. After=network-online.target waits for DHCP / link-local
 # addressing to complete so the first check doesn't race the
-# network coming up.
+# network coming up. These are user-instance targets; for a
+# system-wide unit, change to network-online.target and
+# WantedBy=multi-user.target below.
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/checkdiff -config /etc/checkdiff/config.toml -state /var/lib/checkdiff/state.json
+# %h expands to the user's home directory in the user systemd
+# instance. -config/-state default to the user's
+# ~/.config/checkdiff/config.toml and ~/.local/share/checkdiff/
+# state.json, so they could be omitted; spelling them out
+# matches what the README documents.
+ExecStart=%h/bin/checkdiff -config %h/.config/checkdiff/config.toml -state %h/.local/share/checkdiff/state.json -v
+WorkingDirectory=%h
 Restart=always
 RestartSec=5
 
-# The daemon writes only to the state file. StateDirectory=
-# makes /var/lib/checkdiff writable and owned by the service
-# user; the binary is told to put the state file there via
-# the -state flag. ProtectSystem=strict makes everything else
-# read-only.
-StateDirectory=checkdiff
+# checkdiff writes only to the state file (atomically, via
+# tmp-file + rename). The user systemd instance already gives
+# the service access to the user's home; ProtectSystem=strict
+# makes everything outside the user's home read-only as a
+# defence-in-depth measure. We don't set ProtectHome=read-only
+# because the daemon needs to write to
+# ~/.local/share/checkdiff/state.json.
 ProtectSystem=strict
-ProtectHome=read-only
 PrivateTmp=true
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target

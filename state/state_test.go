@@ -1,6 +1,7 @@
 package state
 
 import (
+	"encoding/json"
 	"os"
 	"testing"
 	"time"
@@ -195,8 +196,7 @@ type sentinelErr struct{}
 
 func (sentinelErr) Error() string { return "sentinel error" }
 
-func TestIsLegacyHTMLID(t *testing.T) {
-	cases := []struct {
+func TestIsLegacyHTMLID(t *testing.T) {	cases := []struct {
 		in   string
 		want bool
 	}{
@@ -214,4 +214,68 @@ func TestIsLegacyHTMLID(t *testing.T) {
 			t.Errorf("isLegacyHTMLID(%q) = %v, want %v", c.in, got, c.want)
 		}
 	}
+}
+
+// TestSourceStateMarshalJSONFlatShape pins the wire format
+// for /api/state. The in-memory Baseline/Record split is
+// internal; the JSON the web UI consumes must stay flat so
+// s.last_run, s.items_count, etc. resolve to the same paths
+// as before the split. If this test fails, the web UI's
+// reading of /api/state is broken.
+func TestSourceStateMarshalJSONFlatShape(t *testing.T) {
+	now := time.Date(2026, 6, 27, 7, 30, 0, 0, time.UTC)
+	next := now.Add(10 * time.Minute)
+	ss := &SourceState{
+		Baseline: &Baseline{
+			ItemsSeen:  map[string]bool{"a": true, "b": true},
+			ItemsHash:  "sha256:abc",
+			ItemsCount: 2,
+		},
+		Record: &Record{
+			LastRun:     now,
+			NextRun:     next,
+			LastError:   "",
+			LastAdded:   3,
+			LastRemoved: 1,
+		},
+	}
+	b, err := json.Marshal(ss)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	// Field names must be the flat (pre-split) names.
+	for _, want := range []string{"items_seen", "items_hash", "items_count",
+		"last_run", "next_run", "last_added", "last_removed"} {
+		if _, ok := got[want]; !ok {
+			t.Errorf("flat field %q missing from JSON; got keys: %v", want, keys(got))
+		}
+	}
+	// The split-shape names must NOT appear at the top level.
+	for _, banned := range []string{"Baseline", "Record", "baseline", "record"} {
+		if _, ok := got[banned]; ok {
+			t.Errorf("split-shape field %q leaked into the wire format", banned)
+		}
+	}
+	// Values are right, too.
+	if got["items_count"].(float64) != 2 {
+		t.Errorf("items_count = %v, want 2", got["items_count"])
+	}
+	if got["last_added"].(float64) != 3 {
+		t.Errorf("last_added = %v, want 3", got["last_added"])
+	}
+	if got["last_run"].(string) != "2026-06-27T07:30:00Z" {
+		t.Errorf("last_run = %q, want RFC3339 UTC", got["last_run"])
+	}
+}
+
+func keys(m map[string]interface{}) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }
