@@ -28,15 +28,14 @@ type NtfyConfig struct {
 }
 
 // CheckConfig holds runtime options that aren't tied to a specific
-// source. Today there's only one knob: the polling interval. On
-// Linux this drives the systemd timer's OnCalendar (see timer.go);
-// on macOS it drives the launchd plist's StartInterval (see the
-// Makefile). Defaults to 1h to preserve historical behavior.
+// source. The only knob is the global polling interval, used as
+// the default for sources that don't set their own
+// check_interval. Defaults to 1h to preserve historical behavior.
 type CheckConfig struct {
 	// Interval is a Go duration string: "1h", "30m", "10m", "15s",
-	// "2h30m", etc. Must be >= 1 minute and must evenly divide an
-	// hour (for minute-level) or a day (for hour-level) — see
-	// onCalendarFor in timer.go for the full set of accepted values.
+	// "2h30m", etc. Used as the default for sources that don't
+	// set their own Source.CheckInterval. Must be >= 1 minute
+	// (the daemon's per-source goroutine rejects shorter values).
 	Interval string `toml:"check_interval"`
 }
 
@@ -204,10 +203,9 @@ func loadConfig(path string) (*Config, error) {
 			s.Name = s.ID
 		}
 		if s.CheckInterval != "" {
-			// Per-source interval only needs to be a valid Go duration.
-			// The systemd OnCalendar constraints from onCalendarFor
-			// don't apply here — the daemon uses an internal ticker
-			// and accepts any duration >= 1 minute.
+			// Per-source interval only needs to be a valid Go duration
+			// of at least 1 minute. The daemon uses an internal
+			// ticker and accepts any duration >= 1 minute.
 			d, err := time.ParseDuration(s.CheckInterval)
 			if err != nil {
 				return nil, fmt.Errorf("config: source %q: check_interval %q: %w", s.ID, s.CheckInterval, err)

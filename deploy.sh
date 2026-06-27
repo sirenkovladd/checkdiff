@@ -14,7 +14,7 @@ SCP="scp"
 # home (luiscup's deploy.sh uses the same trick).
 REMOTE_BIN='~/bin/checkdiff'
 REMOTE_CONFIG='~/.config/checkdiff/config.toml'
-REMOTE_TIMER='~/.config/systemd/user/checkdiff.timer'
+REMOTE_SERVICE='~/.config/systemd/user/checkdiff.service'
 
 # Local paths. The config default mirrors checkdiff's own default
 # (see -config flag in main.go), so `./deploy.sh` with no args does
@@ -22,31 +22,21 @@ REMOTE_TIMER='~/.config/systemd/user/checkdiff.timer'
 #   ./deploy.sh ./staging.toml
 LOCAL_BIN="bin/checkdiff"
 LOCAL_CONFIG="${1:-$HOME/.config/checkdiff/config.toml}"
+LOCAL_SERVICE="contrib/checkdiff.service"
 
 if [ ! -f "$LOCAL_CONFIG" ]; then
   echo "error: config not found at $LOCAL_CONFIG" >&2
-  echo "  pass it as the first arg, or generate one with:" >&2
-  echo "    ./bin/checkdiff -config $LOCAL_CONFIG -init" >&2
+  echo "  pass it as the first arg, or let the daemon generate one on first run." >&2
   exit 1
 fi
 
-# Generate the systemd timer unit from the existing local binary
-# (a macOS build is fine here — -print-timer is OS-agnostic). Done
-# BEFORE the cross-compile below, because that overwrites $LOCAL_BIN
-# with a Linux ELF that macOS can't execute. The timer content
-# depends on [check].check_interval in the config, so any interval
-# change re-renders the file and a SHA-compare below decides whether
-# it actually needs to be uploaded.
-TMP_TIMER=$(mktemp)
-trap 'rm -f "$TMP_TIMER"' EXIT
 if [ ! -x "$LOCAL_BIN" ]; then
   echo "error: $LOCAL_BIN not found or not executable; run 'make build' first" >&2
   exit 1
 fi
-if ! "$LOCAL_BIN" -config "$LOCAL_CONFIG" -print-timer > "$TMP_TIMER" 2> "$TMP_TIMER.err"; then
-  cat "$TMP_TIMER.err" >&2
-  echo "error: failed to render timer from $LOCAL_BIN" >&2
-  echo "  (does the local config have a valid [check].check_interval?)" >&2
+
+if [ ! -f "$LOCAL_SERVICE" ]; then
+  echo "error: $LOCAL_SERVICE not found" >&2
   exit 1
 fi
 
@@ -56,7 +46,7 @@ GOOS=linux GOARCH=amd64 go build -trimpath -o "$LOCAL_BIN" .
 # Compute local SHA-256 (always 64 hex chars).
 LOCAL_BIN_SHA=$(shasum -a 256 "$LOCAL_BIN" | awk '{print $1}')
 LOCAL_CONFIG_SHA=$(shasum -a 256 "$LOCAL_CONFIG" | awk '{print $1}')
-LOCAL_TIMER_SHA=$(shasum -a 256 "$TMP_TIMER" | awk '{print $1}')
+LOCAL_SERVICE_SHA=$(shasum -a 256 "$LOCAL_SERVICE" | awk '{print $1}')
 
 # get_remote_sha <remote-path> echoes the remote SHA-256, or an empty
 # string if the file doesn't exist. A genuine SSH failure still aborts
@@ -77,16 +67,16 @@ get_remote_sha() {
 
 REMOTE_BIN_SHA=$(get_remote_sha "$REMOTE_BIN")
 REMOTE_CONFIG_SHA=$(get_remote_sha "$REMOTE_CONFIG")
-REMOTE_TIMER_SHA=$(get_remote_sha "$REMOTE_TIMER")
+REMOTE_SERVICE_SHA=$(get_remote_sha "$REMOTE_SERVICE")
 
 # Decide which files to deploy. Anything whose local hash differs from
 # the remote hash (including a missing remote file) is on the list.
 bin_action="unchanged"
 config_action="unchanged"
-timer_action="unchanged"
+service_action="unchanged"
 [ "$LOCAL_BIN_SHA"     != "$REMOTE_BIN_SHA"     ] && bin_action="will deploy"
 [ "$LOCAL_CONFIG_SHA"  != "$REMOTE_CONFIG_SHA"  ] && config_action="will deploy"
-[ "$LOCAL_TIMER_SHA"   != "$REMOTE_TIMER_SHA"   ] && timer_action="will deploy"
+[ "$LOCAL_SERVICE_SHA" != "$REMOTE_SERVICE_SHA" ] && service_action="will deploy"
 
 short_sha() { echo "${1:0:8}"; }
 
@@ -106,18 +96,18 @@ else
   printf "  %-7s  local %s  remote (absent)     → %s\n" \
     "config" "$(short_sha "$LOCAL_CONFIG_SHA")" "$config_action"
 fi
-if [ -n "$REMOTE_TIMER_SHA" ]; then
+if [ -n "$REMOTE_SERVICE_SHA" ]; then
   printf "  %-7s  local %s  remote %s  → %s\n" \
-    "timer"  "$(short_sha "$LOCAL_TIMER_SHA")"  "$(short_sha "$REMOTE_TIMER_SHA")"  "$timer_action"
+    "service" "$(short_sha "$LOCAL_SERVICE_SHA")" "$(short_sha "$REMOTE_SERVICE_SHA")" "$service_action"
 else
   printf "  %-7s  local %s  remote (absent)     → %s\n" \
-    "timer"  "$(short_sha "$LOCAL_TIMER_SHA")"  "$timer_action"
+    "service" "$(short_sha "$LOCAL_SERVICE_SHA")" "$service_action"
 fi
 echo
 
 # Short-circuit: nothing to do, so don't restart the service either.
-if [ "$bin_action" = "unchanged" ] && [ "$config_action" = "unchanged" ] && [ "$timer_action" = "unchanged" ]; then
-  echo "Nothing to deploy: bin, config, and timer are identical on the server."
+if [ "$bin_action" = "unchanged" ] && [ "$config_action" = "unchanged" ] && [ "$service_action" = "unchanged" ]; then
+  echo "Nothing to deploy: bin, config, and service are identical on the server."
   exit 0
 fi
 
@@ -130,28 +120,27 @@ fi
   echo "Uploading config..."
   $SCP "$LOCAL_CONFIG" "$SERVER:/tmp/checkdiff-config.toml"
 }
-[ "$timer_action" = "will deploy" ] && {
-  echo "Uploading timer..."
-  $SCP "$TMP_TIMER" "$SERVER:/tmp/checkdiff.timer"
+[ "$service_action" = "will deploy" ] && {
+  echo "Uploading service..."
+  $SCP "$LOCAL_SERVICE" "$SERVER:/tmp/checkdiff.service"
 }
 
 # Compose the remote install command. The prelude is always run; the
 # per-file install steps are only included for changed files. The
 # postlude is always run (we restarted the service, so the new
-# binary/config is picked up). When the timer file changed, we also
-# create ~/.config/systemd/user/ on the remote before installing.
-PRELUDE="systemctl --user stop checkdiff.timer 2>/dev/null || true; \
-  systemctl --user stop checkdiff.service 2>/dev/null || true; \
+# binary/config is picked up). The service file is patched on the
+# remote to use the user's actual binary and config paths (the
+# checked-in service file uses /usr/local/bin and /etc paths).
+PRELUDE="systemctl --user stop checkdiff.service 2>/dev/null || true; \
   mkdir -p ~/bin ~/.config/checkdiff ~/.local/share/checkdiff ~/.config/systemd/user"
 
 INSTALL=""
 [ "$bin_action"    = "will deploy" ] && INSTALL="${INSTALL:+${INSTALL} && }install -m 0755 /tmp/checkdiff $REMOTE_BIN"
 [ "$config_action" = "will deploy" ] && INSTALL="${INSTALL:+${INSTALL} && }install -m 0600 /tmp/checkdiff-config.toml $REMOTE_CONFIG"
-[ "$timer_action"  = "will deploy" ] && INSTALL="${INSTALL:+${INSTALL} && }install -m 0644 /tmp/checkdiff.timer $REMOTE_TIMER"
+[ "$service_action" = "will deploy" ] && INSTALL="${INSTALL:+${INSTALL} && }sed -e 's|/usr/local/bin/checkdiff|$REMOTE_BIN|g' -e 's|/etc/checkdiff/config.toml|$REMOTE_CONFIG|g' /tmp/checkdiff.service > $REMOTE_SERVICE && chmod 0644 $REMOTE_SERVICE"
 
 POSTLUDE="systemctl --user daemon-reload; \
-  systemctl --user enable --now checkdiff.timer; \
-  systemctl --user start checkdiff.service"
+  systemctl --user enable --now checkdiff.service"
 
 echo "Deploying..."
 # Join with ';' when one side is empty (e.g. only one file changed)
@@ -163,8 +152,6 @@ else
 fi
 
 echo "Done! Status:"
-$SSH "systemctl --user status checkdiff.timer --no-pager | head -10 && \
-  echo '--- next scheduled run ---' && \
-  systemctl --user list-timers --no-pager | grep checkdiff || true && \
+$SSH "systemctl --user status checkdiff.service --no-pager | head -10 && \
   echo '--- last 5 log lines ---' && \
   journalctl --user -u checkdiff.service -n 5 --no-pager || true"

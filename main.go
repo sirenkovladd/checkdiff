@@ -21,7 +21,6 @@ var (
 	flagInit       = flag.Bool("init", false, "write a default config and exit")
 	flagGhPath     = flag.String("gh", "", "explicit path to gh binary (default: auto-discover)")
 	flagTestNotify = flag.Bool("test-notify", false, "send a single 'test' notification (to verify ntfy wiring) and exit")
-	flagPrintTimer = flag.Bool("print-timer", false, "print a systemd user timer unit (driven by [check].check_interval) to stdout and exit")
 	flagDaemon     = flag.Bool("daemon", false, "run as a long-lived daemon with per-source goroutines (one-shot is the default)")
 )
 
@@ -75,19 +74,6 @@ func main() {
 	st, err := loadState(*flagState)
 	if err != nil {
 		log.Fatalf("state: %v", err)
-	}
-
-	if *flagPrintTimer {
-		interval, err := time.ParseDuration(cfg.Check.Interval)
-		if err != nil {
-			log.Fatalf("print-timer: parse check.check_interval %q: %v", cfg.Check.Interval, err)
-		}
-		onCal, err := onCalendarFor(interval)
-		if err != nil {
-			log.Fatalf("print-timer: %v", err)
-		}
-		fmt.Printf(systemdTimerTemplate, cfg.Check.Interval, onCal)
-		return
 	}
 
 	if *flagTestNotify {
