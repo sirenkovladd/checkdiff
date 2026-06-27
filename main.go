@@ -57,7 +57,20 @@ func main() {
 
 	cfg, err := loadConfig(*flagConfig)
 	if err != nil {
-		log.Fatalf("config: %v", err)
+		// If we're entering daemon mode and the config simply
+		// doesn't exist yet, generate a default with a fresh
+		// token. This is the first-run experience: the user
+		// runs `checkdiff -daemon` and gets a working setup
+		// with a token they can paste into the web UI.
+		if *flagDaemon && os.IsNotExist(err) {
+			if genErr := ensureConfigForDaemon(*flagConfig); genErr != nil {
+				log.Fatalf("generate config: %v", genErr)
+			}
+			cfg, err = loadConfig(*flagConfig)
+		}
+		if err != nil {
+			log.Fatalf("config: %v", err)
+		}
 	}
 	st, err := loadState(*flagState)
 	if err != nil {
