@@ -435,6 +435,116 @@ func TestWebSourcesConcurrentWrites(t *testing.T) {
 	}
 }
 
+func TestWebSourceContentJsonValue(t *testing.T) {
+	// The content endpoint for a json_value source should
+	// return the current value as a string, plus the type
+	// marker so the UI can branch on it.
+	ws := newTestWebServer(t, "secret")
+	handler := ws.RegisterForTest()
+	// Seed the state's baseline for the source.
+	ws_state(ws).Sources["alpha"] = &state.SourceState{
+		Baseline: &state.Baseline{ItemsSeen: map[string]bool{"current value here": true}},
+		Record:   &state.Record{},
+	}
+	// Update the source's type via the in-memory config.
+	cfg := ws_cfg(ws)
+	for i := range cfg.Sources {
+		if cfg.Sources[i].ID == "alpha" {
+			cfg.Sources[i].Type = "json_value"
+			cfg.Sources[i].Path = "body.foo.bar"
+			break
+		}
+	}
+	req := httptest.NewRequest("GET", "/api/sources/alpha/content", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rw := httptest.NewRecorder()
+	handler.ServeHTTP(rw, req)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("GET content: got %d, want 200; body=%s", rw.Code, rw.Body.String())
+	}
+	var got struct {
+		Type  string `json:"type"`
+		Value string `json:"value"`
+	}
+	if err := json.NewDecoder(rw.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Type != "json_value" {
+		t.Errorf("type = %q, want json_value", got.Type)
+	}
+	if got.Value != "current value here" {
+		t.Errorf("value = %q, want 'current value here'", got.Value)
+	}
+}
+
+func TestWebSourceContentJsonList(t *testing.T) {
+	// For html/json sources, the content endpoint returns
+	// the items currently in state.Baseline.ItemsSeen.
+	// Items are sorted alphabetically for stable display.
+	ws := newTestWebServer(t, "secret")
+	handler := ws.RegisterForTest()
+	// "alpha" is the json source in the test config. Seed
+	// its baseline with two items and verify the response
+	// surfaces both, sorted.
+	ws_state(ws).Sources["alpha"] = &state.SourceState{
+		Baseline: &state.Baseline{ItemsSeen: map[string]bool{
+			"anthropic/claude-3.5-sonnet": true,
+			"openai/gpt-4o":               true,
+		}},
+		Record: &state.Record{},
+	}
+	req := httptest.NewRequest("GET", "/api/sources/alpha/content", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rw := httptest.NewRecorder()
+	handler.ServeHTTP(rw, req)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("GET content: got %d, want 200; body=%s", rw.Code, rw.Body.String())
+	}
+	var got struct {
+		Type  string `json:"type"`
+		Items []struct {
+			ID    string `json:"id"`
+			Title string `json:"title"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(rw.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Type != "json" {
+		t.Errorf("type = %q, want json", got.Type)
+	}
+	if len(got.Items) != 2 {
+		t.Fatalf("items: got %d, want 2", len(got.Items))
+	}
+	// Items should be sorted alphabetically by id.
+	if got.Items[0].ID != "anthropic/claude-3.5-sonnet" || got.Items[1].ID != "openai/gpt-4o" {
+		t.Errorf("items not sorted: %+v", got.Items)
+	}
+}
+
+func TestWebSourceContentUnknownSource(t *testing.T) {
+	ws := newTestWebServer(t, "secret")
+	handler := ws.RegisterForTest()
+	req := httptest.NewRequest("GET", "/api/sources/no-such-source/content", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rw := httptest.NewRecorder()
+	handler.ServeHTTP(rw, req)
+	if rw.Code != http.StatusNotFound {
+		t.Errorf("unknown source: got %d, want 404", rw.Code)
+	}
+}
+
+func TestWebSourceContentRequiresAuth(t *testing.T) {
+	ws := newTestWebServer(t, "secret")
+	handler := ws.RegisterForTest()
+	req := httptest.NewRequest("GET", "/api/sources/alpha/content", nil)
+	rw := httptest.NewRecorder()
+	handler.ServeHTTP(rw, req)
+	if rw.Code != http.StatusUnauthorized {
+		t.Errorf("unauthenticated: got %d, want 401", rw.Code)
+	}
+}
+
 func TestTokenFromRequest(t *testing.T) {
 	cases := []struct {
 		name   string

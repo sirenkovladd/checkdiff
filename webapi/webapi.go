@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -334,10 +335,101 @@ func (w *Server) handleSources(rw http.ResponseWriter, r *http.Request) {
 // watcher triggers a daemon.Reload, which cancels the old
 // runner (preserving state) and starts a new one with the new
 // config.
+// handleSourceContent returns the current content tracked by
+// a source, in a shape tailored to the source's type. Used
+// by the web UI's "View" dialog. The shapes:
+//
+//	json_value:  {"type":"json_value","value":"<current text>"}
+//	html/json:   {"type":"<t>","items":[{"id":"...","title":"..."}]}
+//	github_file: same as html/json plus a "commit" object
+//	             with the latest commit that touched the file
+//	             (queried live via gh api, not from state).
+//
+// The items list is built from state.Baseline.ItemsSeen
+// (the IDs the daemon has seen). For html sources the ID
+// IS the displayable text; for json sources the ID is the
+// configured id_field value (also informative — e.g.
+// "anthropic/claude-3.5-sonnet"). github_file's content
+// dialog also surfaces the latest commit because "what
+// commit last edited this file" is the most useful question
+// for a file-tracking source.
+//
+// The endpoint reads state under the read lock (a snapshot),
+// so it's safe to call from the UI without blocking daemon
+// goroutines.
+func (w *Server) handleSourceContent(rw http.ResponseWriter, r *http.Request, sourceID string) {
+	w.mu.RLock()
+	var src *source.Source
+	for i := range w.cfg.Sources {
+		if w.cfg.Sources[i].ID == sourceID {
+			src = &w.cfg.Sources[i]
+			break
+		}
+	}
+	w.mu.RUnlock()
+	if src == nil {
+		http.Error(rw, fmt.Sprintf("source %q not found", sourceID), http.StatusNotFound)
+		return
+	}
+
+	// Build the items list from state. For every type the
+	// ID alone is informative enough to be the title in the
+	// list; the UI shows a plain list. Sort alphabetically
+	// for a stable display (Go map iteration is random).
+	ss := w.state.Snapshot(sourceID)
+	var items []map[string]string
+	if ss != nil && ss.Baseline != nil {
+		items = make([]map[string]string, 0, len(ss.Baseline.ItemsSeen))
+		for id := range ss.Baseline.ItemsSeen {
+			items = append(items, map[string]string{"id": id, "title": id})
+		}
+		sort.Slice(items, func(i, j int) bool { return items[i]["id"] < items[j]["id"] })
+	}
+
+	switch src.Type {
+	case "json_value":
+		value := ""
+		if len(items) > 0 {
+			value = items[0]["id"]
+		}
+		writeJSON(rw, map[string]any{"type": "json_value", "value": value})
+
+	case "html", "json":
+		writeJSON(rw, map[string]any{"type": src.Type, "items": items})
+
+	case "github_file":
+		// The commit lookup goes through gh CLI and may be
+		// slow / fail (auth, network, rate limit). Surface
+		// the error to the UI rather than masking it.
+		commit, err := source.GetLatestCommit(r.Context(), src)
+		if err != nil {
+			http.Error(rw, fmt.Sprintf("commit lookup: %v", err), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(rw, map[string]any{
+			"type":   "github_file",
+			"items":  items,
+			"commit": commit,
+		})
+
+	default:
+		http.Error(rw, fmt.Sprintf("unsupported source type: %q", src.Type), http.StatusBadRequest)
+	}
+}
+
 func (w *Server) handleSourceByID(rw http.ResponseWriter, r *http.Request) {
 	id := r.URL.Path[len("/api/sources/"):]
 	if id == "" {
 		http.NotFound(rw, r)
+		return
+	}
+	// /api/sources/{id}/content
+	if strings.HasSuffix(id, "/content") {
+		if r.Method != http.MethodGet {
+			http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.handleSourceContent(rw, r, strings.TrimSuffix(id, "/content"))
 		return
 	}
 	// /api/sources/{id}/run

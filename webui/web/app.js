@@ -102,24 +102,19 @@ function renderSources(sources, state) {
     tr.appendChild(td(s.last_run ? new Date(s.last_run).toLocaleString() : "—"));
     tr.appendChild(td(s.next_run ? new Date(s.next_run).toLocaleString() : "—"));
     tr.appendChild(td(s.items_count != null ? String(s.items_count) : "—"));
-    // items_hash is "sha256:<64 hex chars>". The first 8 hex
-    // chars after the prefix are plenty for a visual fingerprint;
-    // the full hash is in the API response if the user needs it.
-    const fullHash = s.items_hash || "";
-    const shortHash = fullHash.startsWith("sha256:") ? fullHash.slice(7, 15) : (fullHash ? fullHash.slice(0, 8) : "—");
-    tr.appendChild(td(shortHash, { title: fullHash || "no hash yet" }));
     tr.appendChild(td(`+${s.last_added || 0} / -${s.last_removed || 0}`));
     const actions = document.createElement("td");
+    const viewBtn = btn("View", () => openContentDialog(src));
     const runBtn = btn("Run now", () => runNow(src.id));
     const editBtn = btn("Edit", () => openSourceDialog(src));
     const delBtn = btn("Delete", () => deleteSource(src.id));
-    actions.append(runBtn, editBtn, delBtn);
+    actions.append(viewBtn, runBtn, editBtn, delBtn);
     tr.appendChild(actions);
     tbody.appendChild(tr);
     if (s.last_error) {
       const errRow = document.createElement("tr");
       const errCell = document.createElement("td");
-      errCell.colSpan = 12;
+      errCell.colSpan = 11;
       errCell.className = "error";
       errCell.textContent = "Error: " + s.last_error;
       errRow.appendChild(errCell);
@@ -145,6 +140,104 @@ function btn(label, onclick) {
   e.textContent = label;
   e.onclick = onclick;
   return e;
+}
+
+// openContentDialog fetches /api/sources/{id}/content and
+// renders the result in a dialog. The shape depends on the
+// source type:
+//
+//	json_value  - a single highlighted value
+//	html/json   - a scrollable list of item IDs
+//	github_file - the list plus a "Last commit" section with
+//	              the most recent commit's SHA, message,
+//	              author, date, and a link to GitHub.
+//
+// The endpoint reuses the auth headers from authHeaders(),
+// so the call goes through the same Bearer-token path as
+// every other API call.
+async function openContentDialog(src) {
+  const dlg = $("#content-dialog");
+  $("#content-title").textContent = src.name || src.id;
+  $("#content-body").innerHTML = '<p class="hint">Loading…</p>';
+  dlg.showModal();
+  let resp;
+  try {
+    resp = await api(`/api/sources/${encodeURIComponent(src.id)}/content`);
+  } catch (e) {
+    $("#content-body").innerHTML = `<p class="error">Failed to load: ${escapeHtml(e.message)}</p>`;
+    return;
+  }
+  if (!resp) return; // api() handles 401 by clearing localStorage and showing login
+  $("#content-body").innerHTML = "";
+  if (resp.type === "json_value") {
+    const box = document.createElement("div");
+    box.className = "value-box";
+    box.textContent = resp.value || "(empty)";
+    $("#content-body").appendChild(box);
+    const meta = document.createElement("p");
+    meta.className = "hint";
+    meta.textContent = "Path: " + (src.path || "?");
+    $("#content-body").appendChild(meta);
+  } else if (resp.type === "html" || resp.type === "json") {
+    const count = document.createElement("p");
+    count.className = "hint";
+    count.textContent = `${resp.items.length} item${resp.items.length === 1 ? "" : "s"}`;
+    $("#content-body").appendChild(count);
+    if (resp.items.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "hint";
+      empty.textContent = "(no items yet — first run hasn't completed)";
+      $("#content-body").appendChild(empty);
+    } else {
+      const list = document.createElement("ul");
+      list.className = "item-list";
+      for (const it of resp.items) {
+        const li = document.createElement("li");
+        li.textContent = it.title || it.id;
+        list.appendChild(li);
+      }
+      $("#content-body").appendChild(list);
+    }
+  } else if (resp.type === "github_file") {
+    if (resp.commit) {
+      const sec = document.createElement("div");
+      sec.className = "commit-section";
+      const heading = document.createElement("h3");
+      heading.textContent = "Last commit";
+      sec.appendChild(heading);
+      const msg = document.createElement("pre");
+      msg.className = "commit-message";
+      msg.textContent = (resp.commit.commit && resp.commit.commit.message) || "(no message)";
+      sec.appendChild(msg);
+      const meta = document.createElement("p");
+      meta.className = "hint";
+      const author = (resp.commit.commit && resp.commit.commit.author && resp.commit.commit.author.name) || "unknown";
+      const date = (resp.commit.commit && resp.commit.commit.author && resp.commit.commit.author.date) || "";
+      const shortSha = (resp.commit.sha || "").slice(0, 7);
+      const link = document.createElement("a");
+      link.href = resp.commit.html_url || "#";
+      link.target = "_blank";
+      link.rel = "noopener";
+      link.textContent = shortSha;
+      meta.appendChild(document.createTextNode(`${author} \u00b7 ${date} \u00b7 `));
+      meta.appendChild(link);
+      sec.appendChild(meta);
+      $("#content-body").appendChild(sec);
+    }
+    const count = document.createElement("p");
+    count.className = "hint";
+    count.textContent = `File content fingerprint: ${(resp.items[0] && resp.items[0].id) || "(none)"}`;
+    $("#content-body").appendChild(count);
+  }
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 async function runNow(id) {

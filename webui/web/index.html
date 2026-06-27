@@ -39,13 +39,12 @@
           <th>Last run</th>
           <th>Next run</th>
           <th>Items</th>
-          <th>Hash</th>
           <th>Last diff</th>
           <th>Actions</th>
         </tr>
       </thead>
       <tbody id="sources-tbody">
-        <tr><td colspan="12">Loading…</td></tr>
+        <tr><td colspan="11">Loading…</td></tr>
       </tbody>
     </table>
   </section>
@@ -75,6 +74,16 @@
       <button id="source-save" value="default" class="primary">Save</button>
     </menu>
   </form>
+</dialog>
+
+<dialog id="content-dialog">
+  <h2 id="content-title">Source content</h2>
+  <div id="content-body">
+    <p class="hint">Loading…</p>
+  </div>
+  <menu>
+    <button value="cancel">Close</button>
+  </menu>
 </dialog>
 
 <dialog id="settings-dialog">
