@@ -49,15 +49,13 @@ func newTestWebServer(t *testing.T, token string) *Server {
 }
 
 // callAuth is a test helper that hits a path on the
-// auth-wrapped mux with the given token (empty string means
-// no auth). It registers routes on a fresh mux each call;
+// top-level mux with the given token (empty string means no
+// auth). It registers routes on a fresh mux each call;
 // concurrent callAuth invocations therefore use independent
 // muxes, but the underlying Server's mu serializes the
 // in-memory config mutations.
 func callAuth(ws *Server, method, path, token, body string) *httptest.ResponseRecorder {
-	mux := http.NewServeMux()
-	ws.RegisterForTest(mux)
-	handler := ws.AuthMiddlewareForTest(mux)
+	handler := ws.RegisterForTest()
 
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	if body != "" {
@@ -109,9 +107,7 @@ func TestWebAuthAcceptsQueryToken(t *testing.T) {
 	ws := newTestWebServer(t, "secret123")
 	probe := NewServer(ws_cfg(ws), ws_daemon(ws), ws_state(ws), ws_configPath(ws), ws_statePath(ws))
 	probe.Reload(ws_cfg(ws))
-	mux := http.NewServeMux()
-	probe.RegisterForTest(mux)
-	handler := probe.AuthMiddlewareForTest(mux)
+	handler := probe.RegisterForTest()
 	req := httptest.NewRequest("GET", "/api/state?token=secret123", nil)
 	rw := httptest.NewRecorder()
 	handler.ServeHTTP(rw, req)
@@ -128,9 +124,7 @@ func TestWebAuthMissingBearerPrefix(t *testing.T) {
 	ws := newTestWebServer(t, "secret123")
 	probe := NewServer(ws_cfg(ws), ws_daemon(ws), ws_state(ws), ws_configPath(ws), ws_statePath(ws))
 	probe.Reload(ws_cfg(ws))
-	mux := http.NewServeMux()
-	probe.RegisterForTest(mux)
-	handler := probe.AuthMiddlewareForTest(mux)
+	handler := probe.RegisterForTest()
 	req := httptest.NewRequest("GET", "/api/state", nil)
 	req.Header.Set("Authorization", "secret123")
 	rw := httptest.NewRecorder()
@@ -477,9 +471,7 @@ func TestWebServesStaticAssets(t *testing.T) {
 	ws := newTestWebServer(t, "secret123")
 	probe := NewServer(ws_cfg(ws), ws_daemon(ws), ws_state(ws), ws_configPath(ws), ws_statePath(ws))
 	probe.Reload(ws_cfg(ws))
-	mux := http.NewServeMux()
-	probe.RegisterForTest(mux)
-	handler := probe.AuthMiddlewareForTest(mux)
+	handler := probe.RegisterForTest()
 
 	for _, path := range []string{"/", "/style.css", "/app.js"} {
 		t.Run(path, func(t *testing.T) {
@@ -497,23 +489,42 @@ func TestWebServesStaticAssets(t *testing.T) {
 	}
 }
 
-func TestWebStaticAssetsRequireAuth(t *testing.T) {
-	// Static assets are gated by the same auth middleware as
-	// the API: an unauthenticated request to / must be
-	// rejected. Otherwise the login form would be served to
-	// anyone who could see the login form's first paint
-	// (which leaks nothing today, but the rule should hold
-	// for the future).
+func TestWebStaticAssetsDoNotRequireAuth(t *testing.T) {
+	// Static UI assets (HTML, JS, CSS) are served without
+	// auth so the browser can load the login form and the JS
+	// that captures ?token=... into localStorage. The
+	// security boundary is the /api/* routes — those require
+	// the token. The login form itself is harmless without
+	// one.
 	ws := newTestWebServer(t, "secret123")
-	probe := NewServer(ws_cfg(ws), ws_daemon(ws), ws_state(ws), ws_configPath(ws), ws_statePath(ws))
-	probe.Reload(ws_cfg(ws))
-	mux := http.NewServeMux()
-	probe.RegisterForTest(mux)
-	handler := probe.AuthMiddlewareForTest(mux)
-	req := httptest.NewRequest("GET", "/", nil)
-	rw := httptest.NewRecorder()
-	handler.ServeHTTP(rw, req)
-	if rw.Code != http.StatusUnauthorized {
-		t.Errorf("unauthenticated GET /: got %d, want 401", rw.Code)
+	handler := ws.RegisterForTest()
+	for _, path := range []string{"/", "/style.css", "/app.js"} {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest("GET", path, nil)
+			rw := httptest.NewRecorder()
+			handler.ServeHTTP(rw, req)
+			if rw.Code != http.StatusOK {
+				t.Errorf("unauthenticated GET %s: got %d, want 200", path, rw.Code)
+			}
+		})
+	}
+}
+
+func TestWebAPIRoutesStillRequireAuth(t *testing.T) {
+	// The /api/* routes MUST still require the token even
+	// though static assets don't. Otherwise anyone who can
+	// reach the host could read the source list, state, and
+	// config (and rotate the token).
+	ws := newTestWebServer(t, "secret123")
+	handler := ws.RegisterForTest()
+	for _, path := range []string{"/api/state", "/api/config", "/api/sources"} {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest("GET", path, nil)
+			rw := httptest.NewRecorder()
+			handler.ServeHTTP(rw, req)
+			if rw.Code != http.StatusUnauthorized {
+				t.Errorf("unauthenticated GET %s: got %d, want 401", path, rw.Code)
+			}
+		})
 	}
 }

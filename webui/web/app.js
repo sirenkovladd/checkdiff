@@ -299,6 +299,19 @@ $("#token-input").addEventListener("keydown", (e) => { if (e.key === "Enter") co
 $("#refresh").addEventListener("click", loadAll);
 $("#logout-btn").addEventListener("click", logout);
 
+// On load: if the URL has ?token=..., capture it into
+// localStorage so the user doesn't have to retype it. The
+// server-side auth middleware already accepts the query token
+// for this request; the JS just needs to remember it for
+// subsequent ones. Then strip the token from the URL so it
+// doesn't leak into browser history, referer headers, share
+// links, or the address bar.
+const initialToken = new URLSearchParams(location.search).get("token");
+if (initialToken) {
+  localStorage.setItem(TOKEN_KEY, initialToken);
+  history.replaceState(null, "", location.pathname + location.hash);
+}
+
 // On load: try the stored token; fall back to the login form.
 if (localStorage.getItem(TOKEN_KEY)) {
   api("/api/state").then((s) => { if (s !== null) showMain(); });

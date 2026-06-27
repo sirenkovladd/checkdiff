@@ -115,12 +115,20 @@ func (w *Server) bind() error {
 	listen := w.listen
 	w.mu.RUnlock()
 
-	mux := http.NewServeMux()
-	w.registerRoutes(mux)
+	apiMux := http.NewServeMux()
+	rootMux := http.NewServeMux()
+	w.registerRoutes(apiMux, rootMux)
+
+	// /api/* requires the bearer token; everything else
+	// (static UI assets) is served unauthenticated so the
+	// browser can load the JS/CSS that contains the login
+	// form. The login form is harmless without a token —
+	// every API call is gated.
+	rootMux.Handle("/api/", w.authMiddleware(apiMux))
 
 	srv := &http.Server{
 		Addr:              listen,
-		Handler:           w.authMiddleware(mux),
+		Handler:           rootMux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -201,20 +209,32 @@ func (w *Server) Stop() {
 }
 
 // registerRoutes wires the API endpoints and the static UI
-// assets into the mux. The static assets are served from the
-// webui package so the binary is self-contained.
-func (w *Server) registerRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/api/state", w.handleState)
-	mux.HandleFunc("/api/config", w.handleConfig)
-	mux.HandleFunc("/api/sources", w.handleSources)
-	mux.HandleFunc("/api/sources/", w.handleSourceByID)
-	mux.HandleFunc("/api/settings", w.handleSettings)
-	mux.HandleFunc("/api/rotate-token", w.handleRotateToken)
+// assets. The API is mounted under /api/ behind the auth
+// middleware; the static UI is mounted at / WITHOUT auth, so
+// the browser can fetch app.js and style.css before the user
+// has signed in. The login form is the only thing the static
+// UI serves to anonymous users, and the form is harmless — it
+// just asks for the token. The token is what's actually
+// secret; protecting it is what authMiddleware is for.
+//
+// The split also makes the ?token=... URL flow work: the
+// browser loads / with the query token (auth passes), then
+// fetches the JS/CSS without the query — which would have 401'd
+// under the old "auth everything" model. Gating only the API
+// means the JS can run and persist the token to localStorage
+// for subsequent visits.
+func (w *Server) registerRoutes(apiMux, rootMux *http.ServeMux) {
+	apiMux.HandleFunc("/api/state", w.handleState)
+	apiMux.HandleFunc("/api/config", w.handleConfig)
+	apiMux.HandleFunc("/api/sources", w.handleSources)
+	apiMux.HandleFunc("/api/sources/", w.handleSourceByID)
+	apiMux.HandleFunc("/api/settings", w.handleSettings)
+	apiMux.HandleFunc("/api/rotate-token", w.handleRotateToken)
 
-	// Static UI assets. We expose them at / so the user only
-	// needs to remember the listen address. /api/... takes
-	// precedence because it's registered first.
-	mux.Handle("/", http.FileServer(http.FS(webui.FS())))
+	// Static UI assets are served from the webui package so
+	// the binary is self-contained. They're served at / on the
+	// root mux, which is NOT behind the auth middleware.
+	rootMux.Handle("/", http.FileServer(http.FS(webui.FS())))
 }
 
 // handleState returns the per-source runtime state. Read-only.
@@ -536,9 +556,18 @@ func (w *Server) ConfigPathForTest() string { return w.configPath }
 // StatePathForTest returns the on-disk state path.
 func (w *Server) StatePathForTest() string { return w.statePath }
 
-// RegisterForTest wires routes into mux (for httptest use
-// without going through Start).
-func (w *Server) RegisterForTest(mux *http.ServeMux) { w.registerRoutes(mux) }
+// RegisterForTest wires routes into the test's muxes. The
+// api mux is mounted under /api/ with the auth middleware
+// applied; the root mux is mounted at / without auth. The
+// returned *http.ServeMux is the top-level mux the test
+// should pass to httptest.
+func (w *Server) RegisterForTest() *http.ServeMux {
+	apiMux := http.NewServeMux()
+	rootMux := http.NewServeMux()
+	w.registerRoutes(apiMux, rootMux)
+	rootMux.Handle("/api/", w.authMiddleware(apiMux))
+	return rootMux
+}
 
 // AuthMiddlewareForTest returns the auth-wrapped handler.
 func (w *Server) AuthMiddlewareForTest(next http.Handler) http.Handler {
