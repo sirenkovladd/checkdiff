@@ -239,6 +239,35 @@ JSON
 	}
 }
 
+func TestJsonValueFormatClickLinkFallback(t *testing.T) {
+	// When a json_value source has a static Link set, the
+	// notification's Click header should point at the Link,
+	// not at the bare URL — same fallback contract as the
+	// json fetcher (per-item Link → source Link → source URL,
+	// modulo json_value having no per-item concept). The
+	// Link is for a single-value source the natural way to
+	// direct the notification at a detail page (e.g. an
+	// activity's registration page) rather than the API
+	// endpoint.
+	s := &Source{
+		ID:   "active",
+		Name: "Activity 594922",
+		Type: "json_value",
+		URL:  "https://api.example.com/activity/594922/status",
+		Link: "https://anc.ca.apm.activecommunities.com/vancouver/activity/594922",
+	}
+	added := []Item{{ID: "Open", Title: "Open"}}
+
+	n := jsonValueFetcher{}.Format(context.Background(), s, added, nil)
+
+	if n.Click != s.Link {
+		t.Errorf("Click = %q, want source Link %q", n.Click, s.Link)
+	}
+	if n.Click == s.URL {
+		t.Errorf("Click should not be the bare URL when Link is set")
+	}
+}
+
 func TestJsonValueValidate(t *testing.T) {
 	// url and path are required; type defaults to "json" if
 	// missing (an existing source config) so the user's

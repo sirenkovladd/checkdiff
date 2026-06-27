@@ -135,11 +135,20 @@ func (jsonValueFetcher) Format(ctx context.Context, s *Source, added, removed []
 	}
 	fmt.Fprintf(&b, "\nSource: %s\n", s.URL)
 
+	// Click header: the source's static Link wins over the
+	// bare URL when set, so a single-value source (e.g. a
+	// single package tracker) can point the notification at
+	// a fixed detail page instead of the raw API endpoint.
+	click := s.URL
+	if s.Link != "" {
+		click = s.Link
+	}
+
 	return Notification{
 		Title:    fmt.Sprintf("🔔 %s: changed", s.Name),
 		Body:     b.String(),
 		Priority: "default",
 		Tags:     "loudspeaker",
-		Click:    s.URL,
+		Click:    click,
 	}
 }
