@@ -164,8 +164,8 @@ topic = "test"
 	if cfg.Web.Listen != "127.0.0.1:8080" {
 		t.Errorf("Web.Listen = %q, want default 127.0.0.1:8080", cfg.Web.Listen)
 	}
-	if cfg.Web.Token != "" {
-		t.Errorf("Web.Token = %q, want empty (web disabled)", cfg.Web.Token)
+	if cfg.Web.Token != nil {
+		t.Errorf("Web.Token = %q, want nil (web disabled)", *cfg.Web.Token)
 	}
 }
 
@@ -185,8 +185,8 @@ token  = "secret"
 	if cfg.Web.Listen != "0.0.0.0:9000" {
 		t.Errorf("Web.Listen = %q, want 0.0.0.0:9000", cfg.Web.Listen)
 	}
-	if cfg.Web.Token != "secret" {
-		t.Errorf("Web.Token = %q, want secret", cfg.Web.Token)
+	if cfg.Web.Token == nil || *cfg.Web.Token != "secret" {
+		t.Errorf("Web.Token = %v, want pointer to \"secret\"", cfg.Web.Token)
 	}
 }
 
@@ -201,7 +201,7 @@ func TestWriteConfigFileRoundTrip(t *testing.T) {
 	src := &Config{
 		Ntfy:  NtfyConfig{Server: "https://ntfy.sh", Topic: "topic"},
 		Check: CheckConfig{Interval: "1h"},
-		Web:   WebConfig{Listen: "127.0.0.1:8080", Token: "tok"},
+		Web:   WebConfig{Listen: "127.0.0.1:8080", Token: ptr("tok")},
 		Sources: []source.Source{
 			{ID: "a", Name: "a", Type: "json", URL: "https://example.com/a"},
 		},
@@ -239,7 +239,7 @@ func TestConfigJSONWireShape(t *testing.T) {
 	cfg := &Config{
 		Ntfy:  NtfyConfig{Server: "https://ntfy.sh", Topic: "topic"},
 		Check: CheckConfig{Interval: "10m"},
-		Web:   WebConfig{Listen: "127.0.0.1:8765", Token: "secret"},
+		Web:   WebConfig{Listen: "127.0.0.1:8765", Token: ptr("secret")},
 		Sources: []source.Source{
 			{ID: "a", Name: "a", Type: "json", URL: "https://example.com/a"},
 		},
@@ -300,3 +300,8 @@ func keysOf(m map[string]interface{}) []string {
 	}
 	return out
 }
+
+// ptr returns a pointer to s. Used for WebConfig.Token and
+// other *string fields in tests, where every call site needs
+// its own *string and a literal `&"x"` reads strangely.
+func ptr(s string) *string { return &s }

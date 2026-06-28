@@ -22,10 +22,14 @@ import (
 // httptest.
 func newTestWebServer(t *testing.T, token string) *Server {
 	t.Helper()
+	var tok *string
+	if token != "" {
+		tok = &token
+	}
 	cfg := &config.Config{
 		Ntfy:  config.NtfyConfig{Topic: "test"},
 		Check: config.CheckConfig{Interval: "1h"},
-		Web:   config.WebConfig{Listen: "127.0.0.1:0", Token: token},
+		Web:   config.WebConfig{Listen: "127.0.0.1:0", Token: tok},
 		Sources: []source.Source{
 			{ID: "alpha", Name: "alpha", Type: "json", URL: "https://example.com/a"},
 			{ID: "beta", Name: "beta", Type: "html", URL: "https://example.com/b"},
@@ -159,8 +163,8 @@ func TestWebConfigEndpointMasksToken(t *testing.T) {
 	if err := json.NewDecoder(rw.Body).Decode(&got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got.Web.Token != "****" {
-		t.Errorf("Web.Token = %q, want %q (must be masked in /api/config response)", got.Web.Token, "****")
+	if got.Web.Token == nil || *got.Web.Token != "****" {
+		t.Errorf("Web.Token = %v, want pointer to \"****\" (must be masked in /api/config response)", got.Web.Token)
 	}
 }
 
@@ -264,8 +268,8 @@ func TestWebSettingsPUT(t *testing.T) {
 	if err := json.Unmarshal(rw.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if resp.Web.Token != "****" {
-		t.Errorf("response Web.Token = %q, want masked", resp.Web.Token)
+	if resp.Web.Token == nil || *resp.Web.Token != "****" {
+		t.Errorf("response Web.Token = %v, want masked \"****\"", resp.Web.Token)
 	}
 	// On-disk config reflects the change too.
 	diskCfg, err := config.Load(ws_configPath(ws))
@@ -274,6 +278,84 @@ func TestWebSettingsPUT(t *testing.T) {
 	}
 	if diskCfg.Ntfy.Topic != "newtopic" {
 		t.Errorf("on-disk Ntfy.Topic = %q, want newtopic", diskCfg.Ntfy.Topic)
+	}
+}
+
+// TestWebSettingsPreservesTokenWhenAbsent is the regression
+// test for the silent-token-clear bug: saving the Settings
+// form with the token field left blank must NOT wipe the
+// existing token. The web UI's settings form omits the
+// "token" key from the JSON when the user didn't type one,
+// and the server must treat "absent" as "leave alone" rather
+// than as "set to empty string". With Token typed as
+// *string, the absent case is nil and is correctly skipped.
+func TestWebSettingsPreservesTokenWhenAbsent(t *testing.T) {
+	ws := newTestWebServer(t, "secret-keep-me")
+
+	// Mirror the exact JSON the web UI sends when the user
+	// only changed the default interval: web block has
+	// listen, no token key.
+	body := `{"ntfy":{"server":"https://ntfy.sh","topic":"vUYg5Qa3YqFkb8SE"},"check":{"interval":"10m"},"web":{"listen":"127.0.0.1:8765"}}`
+	rw := callAuth(ws, "PUT", "/api/settings", "secret-keep-me", body)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("PUT /api/settings: got %d, want 200; body=%s", rw.Code, rw.Body.String())
+	}
+
+	// In-memory token must be unchanged.
+	cfg := ws_cfg(ws)
+	if cfg.Web.Token == nil || *cfg.Web.Token != "secret-keep-me" {
+		t.Errorf("in-memory Web.Token = %v, want pointer to \"secret-keep-me\"", cfg.Web.Token)
+	}
+
+	// On-disk token must be unchanged.
+	disk, err := config.Load(ws_configPath(ws))
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if disk.Web.Token == nil || *disk.Web.Token != "secret-keep-me" {
+		t.Errorf("on-disk Web.Token = %v, want pointer to \"secret-keep-me\"", disk.Web.Token)
+	}
+
+	// Auth with the original token still works (proves the
+	// server hasn't been disabled by the save).
+	rw2 := callAuth(ws, "GET", "/api/state", "secret-keep-me", "")
+	if rw2.Code != http.StatusOK {
+		t.Errorf("auth with original token after PUT: got %d, want 200", rw2.Code)
+	}
+}
+
+// TestWebSettingsExplicitEmptyTokenDisablesWeb documents the
+// supported way to disable the web UI from the API: send an
+// explicit empty string for token. This is the legitimate
+// "field present, value is empty" case the *string change
+// preserves (in contrast to TestWebSettingsPreservesTokenWhenAbsent,
+// which covers the "field absent" case).
+func TestWebSettingsExplicitEmptyTokenDisablesWeb(t *testing.T) {
+	ws := newTestWebServer(t, "token-to-clear")
+
+	// Empty string for token: web UI will be disabled on the
+	// next reload.
+	body := `{"web":{"token":""}}`
+	rw := callAuth(ws, "PUT", "/api/settings", "token-to-clear", body)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("PUT /api/settings: got %d, want 200; body=%s", rw.Code, rw.Body.String())
+	}
+	cfg := ws_cfg(ws)
+	if cfg.Web.Token == nil || *cfg.Web.Token != "" {
+		t.Errorf("in-memory Web.Token = %v, want pointer to \"\" (explicit clear)", cfg.Web.Token)
+	}
+	disk, err := config.Load(ws_configPath(ws))
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	// On disk the token is empty (either nil or &"" depending
+	// on the encoder's omitempty semantics for *string;
+	// pointer-empty values are still emitted as token = ""
+	// because omitempty on a pointer tests the pointer, not
+	// the value). Both forms round-trip to the same effect
+	// at runtime: empty token → web UI disabled.
+	if disk.Web.Token != nil && *disk.Web.Token != "" {
+		t.Errorf("on-disk Web.Token = %v, want empty (nil or pointer to \"\")", *disk.Web.Token)
 	}
 }
 
@@ -296,8 +378,8 @@ func TestWebRotateToken(t *testing.T) {
 		t.Errorf("rotate: token did not change")
 	}
 	cfg := ws_cfg(ws)
-	if cfg.Web.Token != resp.Token {
-		t.Errorf("in-memory token = %q, want %q", cfg.Web.Token, resp.Token)
+	if cfg.Web.Token == nil || *cfg.Web.Token != resp.Token {
+		t.Errorf("in-memory token = %v, want pointer to %q", cfg.Web.Token, resp.Token)
 	}
 	rw2 := callAuth(ws, "GET", "/api/state", "oldtoken", "")
 	if rw2.Code != http.StatusUnauthorized {
@@ -311,8 +393,8 @@ func TestWebRotateToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}
-	if disk.Web.Token != resp.Token {
-		t.Errorf("on-disk token = %q, want %q", disk.Web.Token, resp.Token)
+	if disk.Web.Token == nil || *disk.Web.Token != resp.Token {
+		t.Errorf("on-disk token = %v, want pointer to %q", disk.Web.Token, resp.Token)
 	}
 }
 

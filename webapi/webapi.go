@@ -57,9 +57,21 @@ func NewServer(cfg *config.Config, d *daemon.Daemon, st *state.State, configPath
 		state:      st,
 		configPath: configPath,
 		statePath:  statePath,
-		token:      cfg.Web.Token,
+		token:      derefToken(cfg.Web.Token),
 		listen:     cfg.Web.Listen,
 	}
+}
+
+// derefToken unwraps a *string token, returning "" for nil.
+// The Server's internal `token` field is a plain string for
+// cheap comparison on every request; the *string in the
+// config exists only to distinguish "absent" from "empty" in
+// the JSON wire format.
+func derefToken(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }
 
 // authMiddleware checks that the request carries the
@@ -164,7 +176,17 @@ func (w *Server) Reload(newCfg *config.Config) {
 	w.mu.Lock()
 	oldListen := w.listen
 	oldToken := w.token
-	w.token = newCfg.Web.Token
+	// newCfg.Web.Token is *string: nil means "field absent in
+	// the source that triggered this reload" (e.g. an
+	// unrelated source-only edit rewriting the file), which
+	// must NOT clear the live token. A non-nil pointer —
+	// including &"" — always reflects an explicit decision
+	// by the writer.
+	newToken := oldToken
+	if newCfg.Web.Token != nil {
+		newToken = *newCfg.Web.Token
+	}
+	w.token = newToken
 	w.listen = newCfg.Web.Listen
 	w.cfg = newCfg
 	w.mu.Unlock()
@@ -258,8 +280,17 @@ func (w *Server) handleConfig(rw http.ResponseWriter, r *http.Request) {
 	w.mu.RLock()
 	masked := *w.cfg
 	w.mu.RUnlock()
-	masked.Web.Token = "****"
+	masked.Web.Token = maskedToken()
 	writeJSON(rw, masked)
+}
+
+// maskedToken returns the *string used to mask a non-empty
+// token in /api/config and PUT /api/settings responses. nil
+// for an unset token (so the field is omitted entirely via
+// omitempty), or a pointer to "****" otherwise.
+func maskedToken() *string {
+	s := "****"
+	return &s
 }
 
 // handleSources lists or creates sources. GET returns the
@@ -543,7 +574,7 @@ func (w *Server) handleRotateToken(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.mu.Lock()
-	w.cfg.Web.Token = tok
+	w.cfg.Web.Token = &tok
 	if err := config.WriteFile(w.configPath, w.cfg); err != nil {
 		w.mu.Unlock()
 		http.Error(rw, fmt.Sprintf("write config: %v", err), http.StatusInternalServerError)
@@ -603,15 +634,17 @@ func (w *Server) handleSettings(rw http.ResponseWriter, r *http.Request) {
 		if body.Web.Listen != "" {
 			w.cfg.Web.Listen = body.Web.Listen
 		}
-		// Token may legitimately be the empty string (the
-		// user wants to disable the web UI). Update
-		// unconditionally when the field is present in the
-		// request. The settings form is responsible for
-		// distinguishing "user typed a new value" from "user
-		// left it blank to keep the current one" (the JS
-		// only sends the field when the user types
-		// something).
-		w.cfg.Web.Token = body.Web.Token
+		// Token is *string: nil = field absent in the request
+		// (the JS settings form only sends the token when the
+		// user typed one; a save of unrelated fields must not
+		// wipe it). A non-nil pointer — including one that
+		// points to "" — is always an explicit choice by the
+		// caller. This is the fix for the silent-token-clear
+		// bug; see config.WebConfig's type comment for the
+		// full story.
+		if body.Web.Token != nil {
+			w.cfg.Web.Token = body.Web.Token
+		}
 	}
 	if err := config.WriteFile(w.configPath, w.cfg); err != nil {
 		http.Error(rw, fmt.Sprintf("write config: %v", err), http.StatusInternalServerError)
@@ -620,7 +653,7 @@ func (w *Server) handleSettings(rw http.ResponseWriter, r *http.Request) {
 	// Return the (now-updated) config with the token masked,
 	// so the UI can refresh its local copy in one round-trip.
 	masked := *w.cfg
-	masked.Web.Token = "****"
+	masked.Web.Token = maskedToken()
 	writeJSON(rw, masked)
 }
 

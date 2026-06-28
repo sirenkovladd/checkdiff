@@ -65,16 +65,28 @@ type CheckConfig struct {
 }
 
 // WebConfig holds the optional web UI settings. When Token is
-// empty the web server does not start (the daemon still runs
-// sources; only the HTTP surface is disabled). When Token is
-// non-empty, the HTTP server binds to Listen and requires the
-// token on every request.
+// nil or points to an empty string the web server does not
+// start (the daemon still runs sources; only the HTTP surface
+// is disabled). When Token is non-empty, the HTTP server binds
+// to Listen and requires the token on every request.
+//
+// Token is *string (not string) so the wire format can
+// distinguish "field absent in the JSON request" from "field
+// present, value is empty string". The two have different
+// meanings: absent means "leave the current value alone", and
+// empty string means "explicitly clear the token to disable
+// the web UI". With a plain string, JSON decode can't tell
+// them apart, so a settings-save that includes web but not
+// token (the normal case for the JS form, which only sends
+// the token when the user types one) would silently wipe the
+// existing token. Pointer-to-string is the standard Go fix.
 type WebConfig struct {
 	// Listen is the bind address for the HTTP server, e.g.
 	// "127.0.0.1:8080" (localhost only) or ":8080" (all
 	// interfaces). Default: "127.0.0.1:8080".
 	Listen string `toml:"listen" json:"listen"`
 	// Token is the shared secret required to access the web UI
-	// and JSON API. Empty means the web server is disabled.
-	Token string `toml:"token,omitempty" json:"token,omitempty"`
+	// and JSON API. nil/empty means the web server is disabled.
+	// See the type comment for why this is *string.
+	Token *string `toml:"token,omitempty" json:"token,omitempty"`
 }

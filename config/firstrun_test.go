@@ -40,7 +40,7 @@ func TestEnsureConfigForDaemonIdempotent(t *testing.T) {
 	if err != nil {
 		t.Errorf("after EnsureForDaemon, Load: %v", err)
 	}
-	if cfg.Web.Token == "" {
+	if cfg.Web.Token == nil || *cfg.Web.Token == "" {
 		t.Errorf("generated config has empty token")
 	}
 	_ = body
@@ -59,7 +59,7 @@ func TestEnsureConfigForDaemonGeneratedConfigLoads(t *testing.T) {
 	if cfg.Web.Listen != "127.0.0.1:8080" {
 		t.Errorf("Web.Listen = %q, want %q", cfg.Web.Listen, "127.0.0.1:8080")
 	}
-	if cfg.Web.Token == "" {
+	if cfg.Web.Token == nil || *cfg.Web.Token == "" {
 		t.Errorf("Web.Token is empty in generated config")
 	}
 	if cfg.Check.Interval != "1h" {
