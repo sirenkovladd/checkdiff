@@ -15,6 +15,8 @@ Each entry in `~/.config/checkdiff/config.toml` is a "source":
 | `github_file` | A file in a GitHub repo, fetched with `gh api`. The git blob SHA is the diff key — a notification fires when the file content changes. |
 | `html`        | A web page; elements matching a CSS-ish selector (`h1`..`h4`, `title`, or `tag.class` like `li.attachedfile`) are diffed. Items are tracked by their text content, so **additions and removals of individual entries are detected** (not just "the page changed"). |
 | `json`        | A JSON API. A configurable path (`items_path`, default `data`) locates the array of items; `id_field` (default `id`) and `title_field` (default `name`) pick the stable identifier and display name. Optional `link_field` attaches a per-item URL (e.g. a package tracking link) — the notification's Click header opens that URL instead of the source's URL, and the item is rendered as a markdown link in the body. Optional source-level `link` is a static URL for sources where every entry points at the same page (e.g. a single-package tracking source); it wins over the source's `url` when no per-item `Link` is available. Items are tracked by ID, so additions and removals are detected. Useful for sites that are client-rendered (React/Next.js) where the HTML is empty — the public API is the canonical source. |
+| `json_value`  | A JSON API whose current state is a single field. The `path` is a dot-separated JSON path (e.g. `body.button_status.notification`) to the scalar value to watch. The value is treated as the entire signal; a change fires a notification ("from X to Y"). |
+| `amazon`      | An Amazon shipment tracking page (e.g. `https://www.amazon.ca/gp/your-account/ship-track?itemId=...&orderId=...&shipmentId=...`). The fetcher parses the `pt-status-milestones` div, extracts the current step (the `data-last-reached="true"` milestone's label), the in-progress percent (the next milestone's `data-percent-complete`), and the "Step X of Y" segment from the aria-label. The formatted status string (`"Out for delivery; Step 3 of 4 (51%)"`) is the Item's ID; a change fires a notification. Amazon requires session cookies, so the source config must include the `cookies` field (paste the `Cookie` header value from your browser's dev tools). |
 
 Each source can set its own `check_interval` — either a Go
 duration string (`"30m"`, `"1h"`) **or** a standard 5-field cron
@@ -125,6 +127,23 @@ check_interval = "30m"   # overrides [check].check_interval
 items_path     = "data"
 id_field       = "id"
 title_field    = "name"
+
+# Amazon package tracking. The `cookies` field is the
+# Cookie header value from your browser's dev tools
+# (Network tab → request → Request Headers). Without it
+# the tracking page redirects to sign-in. The fetcher
+# defaults the Referer to the order history page on the
+# same host; override `referer` if your region uses a
+# different landing page.
+[[sources]]
+id             = "amazon-pkg-1"
+name           = "Amazon package 1"
+type           = "amazon"
+url            = "https://www.amazon.ca/gp/your-account/ship-track?itemId=...&orderId=...&shipmentId=..."
+enabled        = true
+check_interval = "30m"
+# cookies = "session-id=...; ubid-acbca=...; at-acbca=..."
+# referer = "https://www.amazon.ca/gp/css/order-history/"
 ```
 
 To disable a source temporarily, set `enabled = false`. To

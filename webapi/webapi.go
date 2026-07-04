@@ -425,6 +425,23 @@ func (w *Server) handleSourceContent(rw http.ResponseWriter, r *http.Request, so
 		}
 		writeJSON(rw, map[string]any{"type": "json_value", "value": value})
 
+	case "amazon":
+		// The amazon fetcher returns a single Item whose ID
+		// is the formatted status string (e.g. "Out for
+		// delivery; Step 3 of 4 (51%)"). The "View" dialog
+		// shows it the same way it shows a json_value
+		// source: a single highlighted value. The full
+		// aria-label is in the Item's Body at fetch time
+		// but isn't stored in state (state only stores
+		// IDs); the user can click through to the source
+		// URL via the notification's Click header to see
+		// the live page with all the milestone details.
+		value := ""
+		if len(items) > 0 {
+			value = items[0]["id"]
+		}
+		writeJSON(rw, map[string]any{"type": "amazon", "value": value})
+
 	case "html", "json":
 		writeJSON(rw, map[string]any{"type": src.Type, "items": items})
 

@@ -85,6 +85,28 @@ type Source struct {
 	// empty, the source uses the global [check].check_interval.
 	CheckInterval string `toml:"check_interval,omitempty" json:"check_interval,omitempty"`
 
+	// Cookies is the value of the Cookie header sent on the
+	// fetch request. Optional. Used by the amazon fetcher
+	// (and any other future fetcher that needs a session
+	// cookie to retrieve a protected page); most public JSON
+	// APIs and GitHub file fetches don't need it. The value
+	// is sent verbatim — no parsing, no validation — so the
+	// user can paste a "Cookie" header value copied from
+	// their browser's dev tools (e.g. "session-id=...;
+	// ubid-acbca=..."). Keep the config file's permissions
+	// restrictive (the daemon writes it 0600) since session
+	// cookies are a long-lived credential.
+	Cookies string `toml:"cookies,omitempty" json:"cookies,omitempty"`
+
+	// Referer is the value of the Referer header sent on the
+	// fetch request. Optional. The amazon fetcher defaults to
+	// the order-history page on the same host when Referer is
+	// empty (the natural navigation path a real user would
+	// take to reach a tracking page); the user can override
+	// here if their Amazon region uses a different landing
+	// page. Other fetchers ignore this field.
+	Referer string `toml:"referer,omitempty" json:"referer,omitempty"`
+
 	// Enabled controls whether the source is active. The pointer
 	// is used so a missing field (the common case for existing
 	// configs) is distinct from an explicit false: a nil pointer
@@ -179,6 +201,7 @@ var registry = map[string]Fetcher{
 	"html":        htmlFetcher{},
 	"json":        jsonFetcher{},
 	"json_value":  jsonValueFetcher{},
+	"amazon":      amazonFetcher{},
 }
 
 // SupportedTypes returns the registered type names, useful for

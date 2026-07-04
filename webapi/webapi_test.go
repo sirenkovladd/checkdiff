@@ -559,6 +559,56 @@ func TestWebSourceContentJsonValue(t *testing.T) {
 	}
 }
 
+func TestWebSourceContentAmazon(t *testing.T) {
+	// The content endpoint for an amazon source should
+	// return the current status string as a single value
+	// (matching the json_value shape) plus the type
+	// marker so the UI can branch on it. The state stores
+	// the formatted status string as the only item ID;
+	// that's the value the user sees in the "View"
+	// dialog.
+	ws := newTestWebServer(t, "secret")
+	handler := ws.RegisterForTest()
+	// Seed the state's baseline for the source. The
+	// amazon fetcher's Item ID is the formatted status
+	// string ("Out for delivery; Step 3 of 4 (51%)"), so
+	// that's what we put in ItemsSeen.
+	ws_state(ws).Sources["alpha"] = &state.SourceState{
+		Baseline: &state.Baseline{ItemsSeen: map[string]bool{"Out for delivery; Step 3 of 4 (51%)": true}},
+		Record:   &state.Record{},
+	}
+	// Update the source's type and URL via the in-memory
+	// config.
+	cfg := ws_cfg(ws)
+	for i := range cfg.Sources {
+		if cfg.Sources[i].ID == "alpha" {
+			cfg.Sources[i].Type = "amazon"
+			cfg.Sources[i].URL = "https://www.amazon.ca/gp/your-account/ship-track?itemId=abc"
+			break
+		}
+	}
+	req := httptest.NewRequest("GET", "/api/sources/alpha/content", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rw := httptest.NewRecorder()
+	handler.ServeHTTP(rw, req)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("GET content: got %d, want 200; body=%s", rw.Code, rw.Body.String())
+	}
+	var got struct {
+		Type  string `json:"type"`
+		Value string `json:"value"`
+	}
+	if err := json.NewDecoder(rw.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Type != "amazon" {
+		t.Errorf("type = %q, want amazon", got.Type)
+	}
+	if got.Value != "Out for delivery; Step 3 of 4 (51%)" {
+		t.Errorf("value = %q, want formatted status string", got.Value)
+	}
+}
+
 func TestWebSourceContentJsonList(t *testing.T) {
 	// For html/json sources, the content endpoint returns
 	// the items currently in state.Baseline.ItemsSeen.

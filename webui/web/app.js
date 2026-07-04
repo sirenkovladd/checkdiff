@@ -178,6 +178,19 @@ async function openContentDialog(src) {
     meta.className = "hint";
     meta.textContent = "Path: " + (src.path || "?");
     $("#content-body").appendChild(meta);
+  } else if (resp.type === "amazon") {
+    // The amazon fetcher returns a single Item whose ID is
+    // the formatted status string ("Out for delivery; Step 3
+    // of 4 (51%)"). Display it the same way as json_value
+    // so the user can see the current state at a glance.
+    const box = document.createElement("div");
+    box.className = "value-box";
+    box.textContent = resp.value || "(no status yet — first run hasn't completed)";
+    $("#content-body").appendChild(box);
+    const meta = document.createElement("p");
+    meta.className = "hint";
+    meta.textContent = "Amazon shipment tracking. A notification fires when the status changes.";
+    $("#content-body").appendChild(meta);
   } else if (resp.type === "html" || resp.type === "json") {
     const count = document.createElement("p");
     count.className = "hint";
@@ -276,6 +289,7 @@ function renderTypeFields(src) {
     html: ["selector"],
     json: ["items_path", "id_field", "title_field", "link_field"],
     json_value: ["path"],
+    amazon: ["cookies", "referer"],
   }[type] || [];
   for (const f of fields) {
     const label = document.createElement("label");
@@ -286,6 +300,14 @@ function renderTypeFields(src) {
     input.value = src?.[f] || "";
     label.appendChild(input);
     container.appendChild(label);
+  }
+  // amazon-specific hint: explain why cookies are
+  // required and where to find them in the browser.
+  if (type === "amazon") {
+    const hint = document.createElement("p");
+    hint.className = "hint";
+    hint.textContent = "Paste the Cookie header value from your browser's dev tools (Network tab → request → Request Headers). Without it the tracking page usually redirects to sign-in.";
+    container.appendChild(hint);
   }
 }
 
@@ -319,7 +341,7 @@ function collectSourceForm() {
   };
   // Type-specific fields.
   const type = data.type;
-  for (const f of ["owner", "repo", "ref", "path", "selector", "items_path", "id_field", "title_field", "link_field"]) {
+  for (const f of ["owner", "repo", "ref", "path", "selector", "items_path", "id_field", "title_field", "link_field", "cookies", "referer"]) {
     const el = $("#source-" + f);
     if (el && el.value) data[f] = el.value;
   }
