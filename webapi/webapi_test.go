@@ -168,6 +168,48 @@ func TestWebConfigEndpointMasksToken(t *testing.T) {
 	}
 }
 
+func TestWebOverviewEndpoint(t *testing.T) {
+	// /api/overview bundles the three pieces of data the web
+	// UI polls on every refresh into a single response:
+	// the source list, the per-source runtime state, and the
+	// (token-masked) config. All three must be present and
+	// well-formed.
+	ws := newTestWebServer(t, "secret123")
+	rw := callAuth(ws, "GET", "/api/overview", "secret123", "")
+	if rw.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200", rw.Code)
+	}
+	var got struct {
+		Sources []source.Source               `json:"sources"`
+		State   map[string]*state.SourceState `json:"state"`
+		Config  config.Config                 `json:"config"`
+	}
+	if err := json.NewDecoder(rw.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Sources) != 2 {
+		t.Errorf("sources: got %d, want 2", len(got.Sources))
+	}
+	if _, ok := got.State["alpha"]; !ok {
+		t.Errorf("state missing 'alpha'")
+	}
+	if got.Config.Ntfy.Topic != "test" {
+		t.Errorf("config.ntfy.topic = %q, want test", got.Config.Ntfy.Topic)
+	}
+	// Token must be masked, same as /api/config.
+	if got.Config.Web.Token == nil || *got.Config.Web.Token != "****" {
+		t.Errorf("config.web.token = %v, want pointer to \"****\" (must be masked)", got.Config.Web.Token)
+	}
+}
+
+func TestWebOverviewRequiresAuth(t *testing.T) {
+	ws := newTestWebServer(t, "secret123")
+	rw := callAuth(ws, "GET", "/api/overview", "", "")
+	if rw.Code != http.StatusUnauthorized {
+		t.Errorf("no token: got %d, want 401", rw.Code)
+	}
+}
+
 func TestWebSourcesGET(t *testing.T) {
 	ws := newTestWebServer(t, "secret123")
 	rw := callAuth(ws, "GET", "/api/sources", "secret123", "")
@@ -759,7 +801,7 @@ func TestWebAPIRoutesStillRequireAuth(t *testing.T) {
 	// config (and rotate the token).
 	ws := newTestWebServer(t, "secret123")
 	handler := ws.RegisterForTest()
-	for _, path := range []string{"/api/state", "/api/config", "/api/sources"} {
+	for _, path := range []string{"/api/state", "/api/config", "/api/overview", "/api/sources"} {
 		t.Run(path, func(t *testing.T) {
 			req := httptest.NewRequest("GET", path, nil)
 			rw := httptest.NewRecorder()

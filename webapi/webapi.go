@@ -249,6 +249,7 @@ func (w *Server) Stop() {
 func (w *Server) registerRoutes(apiMux, rootMux *http.ServeMux) {
 	apiMux.HandleFunc("/api/state", w.handleState)
 	apiMux.HandleFunc("/api/config", w.handleConfig)
+	apiMux.HandleFunc("/api/overview", w.handleOverview)
 	apiMux.HandleFunc("/api/sources", w.handleSources)
 	apiMux.HandleFunc("/api/sources/", w.handleSourceByID)
 	apiMux.HandleFunc("/api/settings", w.handleSettings)
@@ -282,6 +283,36 @@ func (w *Server) handleConfig(rw http.ResponseWriter, r *http.Request) {
 	w.mu.RUnlock()
 	masked.Web.Token = maskedToken()
 	writeJSON(rw, masked)
+}
+
+// handleOverview returns the data the web UI needs to render
+// the main page in a single round-trip: the source list, the
+// per-source runtime state, and the (token-masked) config.
+// This collapses the previous 3-request poll (sources + state
+// + config every 5s) into one call.
+//
+// The endpoint is read-only and uses the same RLock pattern
+// as the underlying handlers it bundles. The three
+// individual endpoints (/api/sources, /api/state,
+// /api/config) are unchanged so external consumers (curl
+// scripts, monitoring tools, the test suite) keep working.
+func (w *Server) handleOverview(rw http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.mu.RLock()
+	sources := make([]source.Source, len(w.cfg.Sources))
+	copy(sources, w.cfg.Sources)
+	masked := *w.cfg
+	w.mu.RUnlock()
+	masked.Web.Token = maskedToken()
+	state := w.state.All()
+	writeJSON(rw, map[string]any{
+		"sources": sources,
+		"state":   state,
+		"config":  masked,
+	})
 }
 
 // maskedToken returns the *string used to mask a non-empty

@@ -69,19 +69,22 @@ function logout() {
 }
 
 async function loadAll() {
-  const [sources, state, config] = await Promise.all([
-    api("/api/sources"),
-    api("/api/state"),
-    api("/api/config"),
-  ]);
-  renderSources(sources || [], state || {});
+  // The 5-second poll hits a single endpoint that returns
+  // the source list, the per-source runtime state, and the
+  // (token-masked) config in one response. The three
+  // individual endpoints (/api/sources, /api/state,
+  // /api/config) are still available for external
+  // consumers.
+  const data = await api("/api/overview");
+  if (!data) return;
+  renderSources(data.sources || [], data.state || {});
   // Cache the current settings for the Settings dialog. The web
   // token comes back masked ("****") so we don't overwrite the
   // user's input on every reload.
-  $("#settings-server").value = config?.ntfy?.server || "";
-  $("#settings-topic").value = config?.ntfy?.topic || "";
-  $("#settings-interval").value = config?.check?.interval || "";
-  $("#settings-listen").value = config?.web?.listen || "";
+  $("#settings-server").value = data.config?.ntfy?.server || "";
+  $("#settings-topic").value = data.config?.ntfy?.topic || "";
+  $("#settings-interval").value = data.config?.check?.interval || "";
+  $("#settings-listen").value = data.config?.web?.listen || "";
 }
 
 function renderSources(sources, state) {

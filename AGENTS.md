@@ -165,6 +165,24 @@ The response is a flat object keyed by source id, e.g.
 The `last_error` field is the most useful thing to look at
 first when a source is misbehaving.
 
+### One-shot snapshot of everything the web UI shows
+
+The web UI polls a single endpoint every 5s to refresh the
+main page. The same endpoint is also handy from `curl` when
+you want all three pieces (sources + state + config) in one
+round-trip without the 3-call fan-out:
+
+```sh
+curl -sS -H "Authorization: Bearer $TOKEN" \
+  https://checkdiff.sirenko.ca/api/overview | jq .
+```
+
+The response shape is `{"sources": [...], "state": {...},
+"config": {...}}`. The `config.web.token` field is masked to
+`"****"` (same as `/api/config`). The three individual
+endpoints above are unchanged for external consumers; this
+is purely a convenience.
+
 ### Adding a source
 
 `POST /api/sources` with the source JSON in the body. The
