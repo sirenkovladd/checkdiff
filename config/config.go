@@ -59,7 +59,7 @@ type CheckConfig struct {
 	// Interval is a Go duration string: "1h", "30m", "10m",
 	// "15s", "2h30m", etc. Used as the default for sources
 	// that don't set their own Source.CheckInterval. Must be
-	// >= 1 minute (the daemon's per-source goroutine rejects
+	// >= 15 seconds (the daemon's per-source goroutine rejects
 	// shorter values).
 	Interval string `toml:"check_interval" json:"interval"`
 }

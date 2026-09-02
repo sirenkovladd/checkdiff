@@ -109,10 +109,10 @@ id             = "too-fast"
 name           = "too fast"
 type           = "json"
 url            = "https://example.com/api"
-check_interval = "30s"
+check_interval = "5s"
 `
 	if _, err := Load(writeConfig(t, body)); err == nil {
-		t.Errorf("Load with sub-minute per-source interval: got nil error, want error")
+		t.Errorf("Load with sub-15s per-source interval: got nil error, want error")
 	}
 }
 
@@ -133,10 +133,10 @@ func TestSourceResolvedInterval(t *testing.T) {
 	// The helper applies the per-source value when set and
 	// falls back to the global default otherwise.
 	cases := []struct {
-		name       string
-		perSource  string
-		globalDef  string
-		want       string
+		name      string
+		perSource string
+		globalDef string
+		want      string
 	}{
 		{"per-source wins", "30m", "1h", "30m"},
 		{"falls back to global", "", "1h", "1h"},

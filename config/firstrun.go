@@ -95,6 +95,7 @@ check_interval = "1h"
 # url             = "https://openrouter.ai/api/v1/models"
 # enabled         = true
 # check_interval  = "30m"
+# topic           = "my-own-channel"   # optional; blank = global [ntfy].topic
 # items_path      = "data"
 # id_field        = "id"
 # title_field     = "name"

@@ -53,7 +53,7 @@ func TestParseIntervalErrors(t *testing.T) {
 		{"empty", ""},
 		{"whitespace only", "   "},
 		{"bad duration", "not-a-duration"},
-		{"sub-minute duration", "30s"},
+		{"sub-15s duration", "5s"},
 		{"bad cron", "this is not cron"},
 	}
 	for _, c := range cases {
@@ -70,9 +70,9 @@ func TestParseIntervalAutoDetect(t *testing.T) {
 	// Whitespace is the disambiguator. A duration like "1h30m"
 	// has no whitespace, so it parses as Go duration even though
 	// it expresses a duration similar to a cron schedule. Note:
-	// sub-minute durations are rejected by Parse itself
+	// sub-15s durations are rejected by Parse itself
 	// (see TestParseIntervalErrors), so the duration cases here
-	// are all >= 1 minute.
+	// are all >= 15s.
 	cases := []struct {
 		name string
 		in   string
@@ -81,6 +81,7 @@ func TestParseIntervalAutoDetect(t *testing.T) {
 		{"duration with h", "2h"},
 		{"duration with m", "5m"},
 		{"duration with s", "60s"},
+		{"duration minimum", "15s"},
 		{"duration complex", "2h30m"},
 		{"cron standard", "0 * * * *"},
 		{"cron every 6h", "0 */6 * * *"},

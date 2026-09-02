@@ -202,7 +202,7 @@ func TestDaemonStopIsIdempotent(t *testing.T) {
 
 func TestDaemonTriggerNowUnknown(t *testing.T) {
 	cfg := &config.Config{
-		Check: config.CheckConfig{Interval: "1h"},
+		Check:   config.CheckConfig{Interval: "1h"},
 		Sources: []source.Source{},
 	}
 	d := NewDaemon(cfg, &state.State{
@@ -392,7 +392,7 @@ func TestDaemonReloadBeforeStartIsNoOp(t *testing.T) {
 	// Reload before Start should be a safe no-op (parentCtx is
 	// nil).
 	cfg := &config.Config{
-		Check: config.CheckConfig{Interval: "1h"},
+		Check:   config.CheckConfig{Interval: "1h"},
 		Sources: []source.Source{},
 	}
 	d := NewDaemon(cfg, &state.State{

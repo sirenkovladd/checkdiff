@@ -78,6 +78,13 @@ type Source struct {
 	// single-package source.
 	Link string `toml:"link,omitempty" json:"link,omitempty"`
 
+	// Topic overrides the global [ntfy].topic for this source,
+	// routing its notifications to a separate ntfy channel.
+	// Optional — empty (or whitespace-only) means "use the
+	// global topic" (see ResolvedTopic). The ntfy server is
+	// always the global one; only the channel differs.
+	Topic string `toml:"topic,omitempty" json:"topic,omitempty"`
+
 	// CheckInterval overrides [check].check_interval for this
 	// source. Accepts either a Go duration string ("1h", "30m",
 	// "10m") or a 5-field cron expression ("0 */6 * * *"). The
@@ -145,6 +152,17 @@ func (s *Source) SetEnabled(v bool) {
 // stays self-consistent regardless.
 func (s *Source) ResolvedInterval(globalDefault string) string {
 	if v := strings.TrimSpace(s.CheckInterval); v != "" {
+		return v
+	}
+	return globalDefault
+}
+
+// ResolvedTopic returns the effective ntfy topic for this
+// source: the per-source Topic if set, otherwise the supplied
+// global default ([ntfy].topic). Whitespace-only per-source
+// values are treated as empty so the global topic is used.
+func (s *Source) ResolvedTopic(globalDefault string) string {
+	if v := strings.TrimSpace(s.Topic); v != "" {
 		return v
 	}
 	return globalDefault

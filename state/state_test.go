@@ -196,7 +196,8 @@ type sentinelErr struct{}
 
 func (sentinelErr) Error() string { return "sentinel error" }
 
-func TestIsLegacyHTMLID(t *testing.T) {	cases := []struct {
+func TestIsLegacyHTMLID(t *testing.T) {
+	cases := []struct {
 		in   string
 		want bool
 	}{

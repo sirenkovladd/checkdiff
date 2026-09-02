@@ -25,6 +25,32 @@ func TestClientUpdateNormalisesTrailingSlash(t *testing.T) {
 	}
 }
 
+func TestClientPublishToUsesGivenTopic(t *testing.T) {
+	// PublishTo must POST to "{server}/{topic}" with the
+	// caller-supplied topic, not the client's configured one.
+	// This is the per-source channel override: sources with
+	// their own topic route there, everything else stays on
+	// the client's default.
+	var lastPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lastPath = r.URL.Path
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "my-topic")
+	if err := c.PublishTo(context.Background(), "burnaby-volleyball", source.Notification{Body: "spots open"}); err != nil {
+		t.Fatalf("PublishTo: %v", err)
+	}
+	if lastPath != "/burnaby-volleyball" {
+		t.Errorf("PublishTo: URL path = %q, want /burnaby-volleyball", lastPath)
+	}
+	// The client's own topic is untouched — Publish still uses it.
+	if got := c.Topic(); got != "my-topic" {
+		t.Errorf("Topic after PublishTo = %q, want my-topic", got)
+	}
+}
+
 func TestClientNewStripsTrailingSlash(t *testing.T) {
 	c := New("https://ntfy.sh/", "topic")
 	if got := c.Server(); got != "https://ntfy.sh" {

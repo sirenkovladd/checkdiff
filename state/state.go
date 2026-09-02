@@ -345,9 +345,9 @@ var saveStateMu sync.Mutex
 // it to json.MarshalIndent so the encoder iterates over a
 // stable copy rather than the live, concurrently-mutated map.
 type saveSnapshot struct {
-	Version int                                 `json:"version"`
-	LastRun time.Time                           `json:"last_run"`
-	Sources map[string]*saveSourceSnapshot      `json:"sources"`
+	Version int                            `json:"version"`
+	LastRun time.Time                      `json:"last_run"`
+	Sources map[string]*saveSourceSnapshot `json:"sources"`
 }
 
 type saveSourceSnapshot struct {

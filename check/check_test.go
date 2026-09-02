@@ -1,10 +1,61 @@
 package check
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"checkdiff/notify"
 	"checkdiff/source"
+	"checkdiff/state"
 )
+
+func TestOnePublishesToResolvedTopic(t *testing.T) {
+	// A source with its own Topic must publish there; a source
+	// without one falls back to the client's configured topic.
+	cases := []struct {
+		name     string
+		srcTopic string
+		wantPath string
+	}{
+		{"per-source topic wins", "burnaby-volleyball", "/burnaby-volleyball"},
+		{"empty topic falls back to client topic", "", "/default-topic"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var hits int32
+			var lastPath string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				atomic.AddInt32(&hits, 1)
+				lastPath = r.URL.Path
+				w.WriteHeader(200)
+			}))
+			defer srv.Close()
+
+			st := &state.State{Sources: map[string]*state.SourceState{}}
+			// Baseline: "old" seen. Diff: "new" appears → publish.
+			st.Remember("src", []source.Item{{ID: "old"}}, time.Now(), time.Now(), 0, 0, "")
+
+			ntfy := notify.New(srv.URL, "default-topic")
+			s := &source.Source{ID: "src", Name: "src", Type: "json", URL: "https://example.com", Topic: c.srcTopic}
+			err := One(context.Background(), ntfy, st, s,
+				[]source.Item{{ID: "old"}, {ID: "new"}},
+				time.Now(), time.Now(), true)
+			if err != nil {
+				t.Fatalf("One: %v", err)
+			}
+			if atomic.LoadInt32(&hits) != 1 {
+				t.Errorf("publish hits = %d, want 1", hits)
+			}
+			if lastPath != c.wantPath {
+				t.Errorf("published path = %q, want %q", lastPath, c.wantPath)
+			}
+		})
+	}
+}
 
 func TestClickURLFor(t *testing.T) {
 	sourceURL := "https://api.uniuni.example"

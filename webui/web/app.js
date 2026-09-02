@@ -277,6 +277,7 @@ function openSourceDialog(src) {
   $("#source-name").value = src?.name || "";
   $("#source-url").value = src?.url || "";
   $("#source-link").value = src?.link || "";
+  $("#source-topic").value = src?.topic || "";
   $("#source-interval").value = src?.check_interval || "";
   $("#source-enabled").checked = src?.enabled !== false;
   renderTypeFields(src);
@@ -339,6 +340,7 @@ function collectSourceForm() {
     name: get("#source-name").trim(),
     url: get("#source-url").trim(),
     link: get("#source-link").trim(),
+    topic: get("#source-topic").trim(),
     check_interval: get("#source-interval").trim(),
     enabled: $("#source-enabled").checked,
   };

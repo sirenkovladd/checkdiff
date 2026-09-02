@@ -345,10 +345,12 @@ for cookies).
 | `json_value`  | `path` — dot-separated JSON path to a scalar                                                         |
 | `amazon`      | `cookies` (required for live session), `referer` (default: order-history page on the same host)     |
 
-All types accept `url`, `check_interval` (Go duration or
-5-field cron), `enabled`, and the static `link` (used as
+All types accept `url`, `check_interval` (Go duration ≥ 15s
+or 5-field cron), `enabled`, the static `link` (used as
 the notification's Click target when no per-item link is
-available). Full schema is in `source/source.go`.
+available), and the optional per-source `topic` (ntfy channel
+override; empty = the global `[ntfy] topic`). Full schema is
+in `source/source.go`.
 
 ### Notification shape
 

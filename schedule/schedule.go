@@ -15,21 +15,18 @@ import (
 	"github.com/robfig/cron/v3"
 )
 
-// intervalFn returns the next run time after `now`. It's the
-// interface the daemon uses to schedule a source's next check,
-// regardless of whether the user's config uses a Go duration or a
-// cron expression.
-//
-// Both code paths converge on this type so the rest of the daemon
-// doesn't need to know which format a source uses. The schedule
+// minDuration is the floor for Go-duration intervals. 15s
+// supports fast-moving use cases (e.g. polling an activity
+// registration button every 15 seconds) without letting a
+// config typo turn into a hammering loop.
+const minDuration = 15 * time.Second
+
 // IntervalFn returns the next run time after `now`. It's the
 // interface the daemon uses to schedule a source's next check,
-// regardless of whether the user's config uses a Go duration
-// or a cron expression.
-//
-// Both code paths converge on this type so the rest of the
-// daemon doesn't need to know which format a source uses. The
-// schedule parser is the only place the choice is made.
+// regardless of whether the user's config uses a Go duration or a
+// cron expression. Both code paths converge on this type so the
+// rest of the daemon doesn't need to know which format a source
+// uses; the schedule parser is the only place the choice is made.
 type IntervalFn func(now time.Time) time.Time
 
 // parseInterval parses a scheduling string and returns the
@@ -46,12 +43,13 @@ type IntervalFn func(now time.Time) time.Time
 // global [check].check_interval before calling this. Whitespace-
 // only strings are also rejected.
 //
-// The minimum supported interval is 1 minute (matching the
+// The minimum supported duration is 15s (matching the
 // existing validation in loadConfig). This rules out cron
 // expressions that fire more often than once a minute (e.g.
 // "* * * * * *" — 6 fields — won't parse as standard 5-field
 // cron, so the user gets a clear error rather than a silent
-// surprise).
+// surprise) and sub-15s durations that would hammer the
+// target URL.
 func Parse(s string) (IntervalFn, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -72,8 +70,8 @@ func Parse(s string) (IntervalFn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse duration %q: %w", s, err)
 	}
-	if d < time.Minute {
-		return nil, fmt.Errorf("interval must be >= 1 minute (got %s)", d)
+	if d < minDuration {
+		return nil, fmt.Errorf("interval must be >= %s (got %s)", minDuration, d)
 	}
 	return func(t time.Time) time.Time { return t.Add(d) }, nil
 }

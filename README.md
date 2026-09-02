@@ -23,7 +23,17 @@ duration string (`"30m"`, `"1h"`) **or** a standard 5-field cron
 expression (`"0 */6 * * *"`). The format is auto-detected by
 the presence of whitespace. Per-source intervals are useful
 when a fast-moving changelog should be checked more often than
-a slow-moving package tracker.
+a slow-moving package tracker. Durations must be at least 15
+seconds (fixed-interval polling of the same URL more often
+than that would hammer the target).
+
+Each source can also override the ntfy topic with a per-source
+`topic` field (blank or missing = the global `[ntfy] topic`).
+This routes a single source's notifications to its own ntfy
+channel — e.g. a fast-polling registration watch gets a
+channel of its own so its messages don't drown out the rest.
+The ntfy server is always the global one; only the channel
+differs.
 
 Source URLs can include `{{...}}` placeholders for cache-busting
 or timestamp injection. Supported placeholders:
@@ -124,6 +134,7 @@ type           = "json"
 url            = "https://openrouter.ai/api/v1/models"
 enabled        = true
 check_interval = "30m"   # overrides [check].check_interval
+topic          = "my-own-channel"  # optional; blank = global [ntfy] topic
 items_path     = "data"
 id_field       = "id"
 title_field    = "name"

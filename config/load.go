@@ -55,7 +55,7 @@ func Load(path string) (*Config, error) {
 		}
 		if s.CheckInterval != "" {
 			// Per-source interval accepts either a Go duration
-			// (>= 1 minute) or a 5-field cron expression. The
+			// (>= 15s) or a 5-field cron expression. The
 			// format is auto-detected; the schedule package is
 			// the only place the choice is made.
 			if _, err := schedule.Parse(s.CheckInterval); err != nil {

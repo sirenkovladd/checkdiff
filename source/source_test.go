@@ -204,3 +204,24 @@ func TestJSONScalarAsString(t *testing.T) {
 		})
 	}
 }
+
+func TestResolvedTopic(t *testing.T) {
+	cases := []struct {
+		name   string
+		src    string
+		global string
+		want   string
+	}{
+		{"per-source topic wins", "burnaby-volleyball", "main", "burnaby-volleyball"},
+		{"empty falls back to global", "", "main", "main"},
+		{"whitespace-only falls back to global", "   ", "main", "main"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := &Source{Topic: c.src}
+			if got := s.ResolvedTopic(c.global); got != c.want {
+				t.Errorf("ResolvedTopic(%q) = %q, want %q", c.global, got, c.want)
+			}
+		})
+	}
+}

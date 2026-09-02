@@ -70,13 +70,26 @@ func (c *Client) Topic() string {
 	return c.topic
 }
 
-// Publish sends one notification built from a source.Notification.
-// The Notification carries the ntfy-specific wire format
-// (Title, Priority, Tags, Click); Publish adds the POST
-// envelope.
+// Publish sends one notification built from a source.Notification
+// to the client's configured topic. The Notification carries the
+// ntfy-specific wire format (Title, Priority, Tags, Click);
+// Publish adds the POST envelope.
 func (c *Client) Publish(ctx context.Context, n source.Notification) error {
 	c.mu.RLock()
-	server, topic := c.server, c.topic
+	topic := c.topic
+	c.mu.RUnlock()
+	return c.PublishTo(ctx, topic, n)
+}
+
+// PublishTo sends one notification to an explicit topic,
+// overriding the client's configured one for this call. Used by
+// sources with a per-source topic override (source.Source.Topic);
+// the shared client stays pointed at the global [ntfy].topic for
+// everything else. The wire shape is identical to Publish — only
+// the topic path differs.
+func (c *Client) PublishTo(ctx context.Context, topic string, n source.Notification) error {
+	c.mu.RLock()
+	server := c.server
 	c.mu.RUnlock()
 	endpoint := fmt.Sprintf("%s/%s", server, url.PathEscape(topic))
 

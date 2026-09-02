@@ -77,11 +77,11 @@ func callAuth(ws *Server, method, path, token, body string) *httptest.ResponseRe
 // methods it exposes. They are used here so we can share the
 // same config / state across multiple auth checks without
 // rebuilding from scratch.
-func ws_cfg(ws *Server) *config.Config { return ws.ConfigForTest() }
+func ws_cfg(ws *Server) *config.Config    { return ws.ConfigForTest() }
 func ws_daemon(ws *Server) *daemon.Daemon { return ws.DaemonForTest() }
-func ws_state(ws *Server) *state.State { return ws.StateForTest() }
-func ws_configPath(ws *Server) string { return ws.ConfigPathForTest() }
-func ws_statePath(ws *Server) string { return ws.StatePathForTest() }
+func ws_state(ws *Server) *state.State    { return ws.StateForTest() }
+func ws_configPath(ws *Server) string     { return ws.ConfigPathForTest() }
+func ws_statePath(ws *Server) string      { return ws.StatePathForTest() }
 
 func TestWebAuthRequiresToken(t *testing.T) {
 	ws := newTestWebServer(t, "secret123")
@@ -227,7 +227,7 @@ func TestWebSourcesGET(t *testing.T) {
 
 func TestWebSourcesPOST(t *testing.T) {
 	ws := newTestWebServer(t, "secret123")
-	body := `{"id":"gamma","name":"gamma","type":"json","url":"https://example.com/g"}`
+	body := `{"id":"gamma","name":"gamma","type":"json","url":"https://example.com/g","topic":"gamma-chan"}`
 	rw := callAuth(ws, "POST", "/api/sources", "secret123", body)
 	if rw.Code != http.StatusCreated {
 		t.Errorf("POST: got %d, want 201", rw.Code)
@@ -238,6 +238,9 @@ func TestWebSourcesPOST(t *testing.T) {
 	}
 	if cfg.Sources[2].ID != "gamma" {
 		t.Errorf("appended source ID = %q, want gamma", cfg.Sources[2].ID)
+	}
+	if cfg.Sources[2].Topic != "gamma-chan" {
+		t.Errorf("appended source topic = %q, want gamma-chan", cfg.Sources[2].Topic)
 	}
 }
 
