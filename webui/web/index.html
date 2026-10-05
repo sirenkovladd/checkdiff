@@ -60,6 +60,7 @@
         <option value="github_file">github_file</option>
         <option value="json_value">json_value</option>
         <option value="amazon">amazon</option>
+        <option value="page_llm">page_llm</option>
       </select>
     </label>
     <label>ID <input name="id" id="source-id" required></label>
@@ -101,6 +102,14 @@
     <label>Default interval <input name="interval" id="settings-interval" placeholder="e.g. 1h"></label>
     <label>Web listen address <input name="listen" id="settings-listen" placeholder="e.g. 127.0.0.1:8080"></label>
     <label>Web token <input name="token" id="settings-token" placeholder="leave blank to keep current token"></label>
+    <h3>LLM summarizer (page_llm sources)</h3>
+    <label>LLM provider <input name="llm-provider" id="settings-llm-provider" placeholder='openai, anthropic, or responses (blank = keep current)'></label>
+    <label>LLM server <input name="llm-server" id="settings-llm-server" placeholder="e.g. https://opencode.ai/zen/go/v1"></label>
+    <label>LLM model <input name="llm-model" id="settings-llm-model" placeholder='e.g. glm-5.3-flash (blank = keep current)'></label>
+    <label>LLM API key env <input name="llm-api-key-env" id="settings-llm-api-key-env" placeholder="e.g. OPENCODE_API_KEY"></label>
+    <label>LLM API key file <input name="llm-api-key-file" id="settings-llm-api-key-file" placeholder="path to key file (raw or JSON)"></label>
+    <label>LLM API key path <input name="llm-api-key-path" id="settings-llm-api-key-path" placeholder='e.g. opencode-go.key (dot path into a JSON key store)'></label>
+    <p class="hint">The key itself is never stored in config.toml — only the env var name / file path. The daemon reads the key at startup and on every config reload.</p>
     <p class="hint">Token and listen changes take effect on save. Other ntfy changes take effect immediately.</p>
     <p>
       <button type="button" id="settings-rotate" class="action">Rotate token</button>

@@ -18,6 +18,7 @@ import (
 
 	"checkdiff/check"
 	"checkdiff/config"
+	"checkdiff/llm"
 	"checkdiff/notify"
 	"checkdiff/schedule"
 	"checkdiff/source"
@@ -76,10 +77,55 @@ func NewDaemon(cfg *config.Config, st *state.State, ntfy *notify.Client, verbose
 	}
 }
 
+// llmClientAdapter wraps an *llm.Client with per-source model
+// overrides: a source with llm_model set uses that model,
+// everything else uses the client's default. It implements
+// source.LLMSummarizer without the source package importing
+// the llm package (which would cycle through config).
+type llmClientAdapter struct {
+	client *llm.Client
+}
+
+func (a *llmClientAdapter) Summarize(ctx context.Context, model, sourceName, pageURL, oldText, newText, customPrompt string) (string, error) {
+	if model == "" || model == a.client.Model {
+		return a.client.Summarize(ctx, sourceName, pageURL, oldText, newText, customPrompt)
+	}
+	override := *a.client
+	override.Model = model
+	return override.Summarize(ctx, sourceName, pageURL, oldText, newText, customPrompt)
+}
+
+// installLLMSummarizer builds the process-wide summarizer for
+// page_llm sources from the [llm] block. No model configured
+// → nil (page_llm falls back to static from/to diffs, so
+// changes still notify). Missing key → client is still
+// installed (Format's fallback covers the 401), but we log
+// once here so the misconfiguration is visible at startup
+// instead of surfacing as a per-change error.
+func installLLMSummarizer(cfg *config.Config) {
+	if cfg == nil || cfg.LLM.Model == "" {
+		source.SetLLMSummarizer(nil)
+		return
+	}
+	key := llm.ResolveAPIKey(cfg.LLM.ApiKeyEnv, cfg.LLM.ApiKeyFile, cfg.LLM.ApiKeyPath)
+	if key == "" {
+		ref := cfg.LLM.ApiKeyEnv
+		if ref == "" {
+			ref = cfg.LLM.ApiKeyFile
+		}
+		log.Printf("llm: no API key found (checked %s); page_llm will send static diffs until a key is available", ref)
+	}
+	source.SetLLMSummarizer(&llmClientAdapter{
+		client: llm.New(cfg.LLM.Provider, cfg.LLM.Server, cfg.LLM.Model, key, cfg.LLM.MaxTokens),
+	})
+}
+
 // Start launches one goroutine per enabled source. Sources that
 // are disabled (or that don't parse) are skipped. Start is
 // idempotent: calling it twice cancels the first set of runners
-// before starting the second.
+// before starting the second. It also (re)installs the LLM
+// summarizer for page_llm sources from the [llm] block, so
+// config reloads pick up model/key changes without a restart.
 func (d *Daemon) Start(ctx context.Context) {
 	d.mu.Lock()
 	d.parentCtx = ctx
@@ -88,6 +134,8 @@ func (d *Daemon) Start(ctx context.Context) {
 		delete(d.runners, id)
 	}
 	d.mu.Unlock()
+
+	installLLMSummarizer(d.cfg)
 
 	for i := range d.cfg.Sources {
 		s := &d.cfg.Sources[i]

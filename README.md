@@ -17,6 +17,7 @@ Each entry in `~/.config/checkdiff/config.toml` is a "source":
 | `json`        | A JSON API. A configurable path (`items_path`, default `data`) locates the array of items; `id_field` (default `id`) and `title_field` (default `name`) pick the stable identifier and display name. Optional `link_field` attaches a per-item URL (e.g. a package tracking link) — the notification's Click header opens that URL instead of the source's URL, and the item is rendered as a markdown link in the body. Optional source-level `link` is a static URL for sources where every entry points at the same page (e.g. a single-package tracking source); it wins over the source's `url` when no per-item `Link` is available. Items are tracked by ID, so additions and removals are detected. Useful for sites that are client-rendered (React/Next.js) where the HTML is empty — the public API is the canonical source. |
 | `json_value`  | A JSON API whose current state is a single field. The `path` is a dot-separated JSON path (e.g. `body.button_status.notification`) to the scalar value to watch. The value is treated as the entire signal; a change fires a notification ("from X to Y"). |
 | `amazon`      | An Amazon shipment tracking page (e.g. `https://www.amazon.ca/gp/your-account/ship-track?itemId=...&orderId=...&shipmentId=...`). The fetcher parses the `pt-status-milestones` div, extracts the current step (the `data-last-reached="true"` milestone's label), the in-progress percent (the next milestone's `data-percent-complete`), and the "Step X of Y" segment from the aria-label. The formatted status string (`"Out for delivery; Step 3 of 4 (51%)"`) is the Item's ID; a change fires a notification. Amazon requires session cookies, so the source config must include the `cookies` field (paste the `Cookie` header value from your browser's dev tools). |
+| `page_llm`    | A web page whose main content is summarized by an LLM. The `selector` (default `main`) extracts the page body text; any change fires a notification whose body is a 2-3 sentence LLM summary of old-vs-new (not a raw diff). Needs the global `[llm]` block (`provider` `openai`/`anthropic`/`responses` — match the model's endpoint table, e.g. `responses` for Muse Spark/Grok/GPT Luna; `server`, `model`, key via `api_key_env`/`api_key_file` + optional `api_key_path`) — e.g. an opencode Go subscription at `https://opencode.ai/zen/go/v1` with the key in `OPENCODE_API_KEY`. The client sends `x-opencode-session` (required) derived per-source. Optional per-source `prompt` (extra instruction) and `llm_model` (model override). With no model configured (or when the LLM call fails), the notification falls back to a truncated from/to diff so the change still notifies. |
 
 Each source can set its own `check_interval` — either a Go
 duration string (`"30m"`, `"1h"`) **or** a standard 5-field cron
@@ -155,6 +156,35 @@ enabled        = true
 check_interval = "30m"
 # cookies = "session-id=...; ubid-acbca=...; at-acbca=..."
 # referer = "https://www.amazon.ca/gp/css/order-history/"
+
+# LLM summarizer for page_llm sources. The key itself is never
+# stored here — only where to find it. An opencode Go
+# subscription (https://opencode.ai/auth) exposes both protocols:
+# provider "openai" hits {server}/chat/completions, "anthropic"
+# hits {server}/messages. With no model set, page_llm still
+# works but sends a static from/to diff.
+# [llm]
+# provider     = "openai"
+# server       = "https://opencode.ai/zen/go/v1"
+# model        = "glm-5.3-flash"
+# api_key_env  = "OPENCODE_API_KEY"
+# api_key_file = "/path/to/key"   # raw key or {"api_key": "..."} JSON
+# api_key_path = "opencode-go.key" # dot path into a JSON store (e.g. ~/.pi/agent/auth.json)
+# max_tokens   = 300
+
+# Campaign page watched by main content + LLM summary. The
+# selector extracts the body text; any change triggers the LLM
+# to summarize old-vs-new into a 2-3 sentence notification.
+# [[sources]]
+# id             = "openprinter"
+# name           = "Openprinter campaign"
+# type           = "page_llm"
+# url            = "https://www.crowdsupply.com/open-tools/openprinter"
+# enabled        = true
+# check_interval = "30m"
+# selector       = "main"   # default; whole main content
+# prompt         = "Focus on launch status, pricing, dates, and new updates; ignore press links."
+# llm_model      = ""       # blank = global [llm].model
 ```
 
 To disable a source temporarily, set `enabled = false`. To
@@ -172,6 +202,10 @@ TOML for you and the daemon hot-reloads).
   notification with separate **Added:** and **Removed:**
   sections listing the affected entries by their stable
   identifier. High-priority when there are 6+ changes.
+- `page_llm`: main content changed → one notification whose
+  body is the LLM's 2-3 sentence summary (or a truncated
+  from/to diff when no model is configured / the LLM call
+  fails).
 - Source fetch fails → one **high-priority warning**
   notification, no state change.
 

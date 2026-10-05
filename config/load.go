@@ -37,6 +37,28 @@ func Load(path string) (*Config, error) {
 	if c.Web.Listen == "" {
 		c.Web.Listen = "127.0.0.1:8080"
 	}
+	// [llm] is optional. With a model set but provider/server
+	// empty, default to the opencode Go subscription shape
+	// (OpenAI-compatible chat/completions at
+	// https://opencode.ai/zen/go/v1, key in OPENCODE_API_KEY)
+	// so a minimal `model = "..."` just works.
+	if c.LLM.Model != "" {
+		if c.LLM.Provider == "" {
+			c.LLM.Provider = "openai"
+		}
+		if c.LLM.Server == "" {
+			c.LLM.Server = "https://opencode.ai/zen/go/v1"
+		}
+		if c.LLM.ApiKeyEnv == "" && c.LLM.ApiKeyFile == "" {
+			c.LLM.ApiKeyEnv = "OPENCODE_API_KEY"
+		}
+	}
+	if c.LLM.Provider != "" && c.LLM.Provider != "openai" && c.LLM.Provider != "anthropic" && c.LLM.Provider != "responses" {
+		return nil, fmt.Errorf("config: llm.provider must be \"openai\", \"anthropic\", or \"responses\"")
+	}
+	if c.LLM.Model != "" && c.LLM.Server == "" {
+		return nil, fmt.Errorf("config: llm.server is required when llm.model is set")
+	}
 	if _, err := schedule.Parse(c.Check.Interval); err != nil {
 		return nil, fmt.Errorf("config: check.check_interval: %w", err)
 	}

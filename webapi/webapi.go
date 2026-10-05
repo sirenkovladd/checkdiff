@@ -473,6 +473,20 @@ func (w *Server) handleSourceContent(rw http.ResponseWriter, r *http.Request, so
 		}
 		writeJSON(rw, map[string]any{"type": "amazon", "value": value})
 
+	case "page_llm":
+		// The page_llm fetcher returns a single Item whose
+		// ID is the normalized page text (capped). The
+		// "View" dialog shows the current text the same way
+		// it shows json_value/amazon sources: one highlighted
+		// value. State stores the full text (not a hash) so
+		// the LLM prompt has both sides of the diff at
+		// Format time.
+		value := ""
+		if len(items) > 0 {
+			value = items[0]["id"]
+		}
+		writeJSON(rw, map[string]any{"type": "page_llm", "value": value})
+
 	case "html", "json":
 		writeJSON(rw, map[string]any{"type": src.Type, "items": items})
 
@@ -600,6 +614,7 @@ type settingsBody struct {
 	Ntfy  *config.NtfyConfig  `json:"ntfy,omitempty"`
 	Check *config.CheckConfig `json:"check,omitempty"`
 	Web   *config.WebConfig   `json:"web,omitempty"`
+	LLM   *config.LLMConfig   `json:"llm,omitempty"`
 }
 
 // handleRotateToken generates a new random token, writes it
@@ -692,6 +707,38 @@ func (w *Server) handleSettings(rw http.ResponseWriter, r *http.Request) {
 		// full story.
 		if body.Web.Token != nil {
 			w.cfg.Web.Token = body.Web.Token
+		}
+	}
+	if body.LLM != nil {
+		// Each LLM field is optional; only supplied values
+		// override. The API key itself is never in the config
+		// (it lives in an env var / file), so there is
+		// nothing secret to mask in responses. The daemon
+		// picks up the new model/server via Reload.
+		if body.LLM.Provider != "" {
+			if body.LLM.Provider != "openai" && body.LLM.Provider != "anthropic" && body.LLM.Provider != "responses" {
+				http.Error(rw, "llm.provider must be \"openai\", \"anthropic\", or \"responses\"", http.StatusBadRequest)
+				return
+			}
+			w.cfg.LLM.Provider = body.LLM.Provider
+		}
+		if body.LLM.Server != "" {
+			w.cfg.LLM.Server = body.LLM.Server
+		}
+		if body.LLM.Model != "" {
+			w.cfg.LLM.Model = body.LLM.Model
+		}
+		if body.LLM.ApiKeyEnv != "" {
+			w.cfg.LLM.ApiKeyEnv = body.LLM.ApiKeyEnv
+		}
+		if body.LLM.ApiKeyFile != "" {
+			w.cfg.LLM.ApiKeyFile = body.LLM.ApiKeyFile
+		}
+		if body.LLM.ApiKeyPath != "" {
+			w.cfg.LLM.ApiKeyPath = body.LLM.ApiKeyPath
+		}
+		if body.LLM.MaxTokens != 0 {
+			w.cfg.LLM.MaxTokens = body.LLM.MaxTokens
 		}
 	}
 	if err := config.WriteFile(w.configPath, w.cfg); err != nil {

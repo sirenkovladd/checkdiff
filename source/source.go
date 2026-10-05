@@ -62,6 +62,17 @@ type Source struct {
 	// HTML-specific
 	Selector string `toml:"selector,omitempty" json:"selector,omitempty"`
 
+	// page_llm-specific: Prompt is an extra instruction appended
+	// to the summarization request (e.g. "focus on launch status
+	// and pricing; ignore press links"). Optional.
+	Prompt string `toml:"prompt,omitempty" json:"prompt,omitempty"`
+
+	// LLMModel overrides the global [llm].model for this
+	// source. Optional — empty means "use the global model".
+	// Useful when one page deserves a stronger model than the
+	// default summarizer.
+	LLMModel string `toml:"llm_model,omitempty" json:"llm_model,omitempty"`
+
 	// JSON-specific
 	ItemsPath  string `toml:"items_path,omitempty" json:"items_path,omitempty"`
 	IDField    string `toml:"id_field,omitempty" json:"id_field,omitempty"`
@@ -220,6 +231,7 @@ var registry = map[string]Fetcher{
 	"json":        jsonFetcher{},
 	"json_value":  jsonValueFetcher{},
 	"amazon":      amazonFetcher{},
+	"page_llm":    pageLLMfetcher{},
 }
 
 // SupportedTypes returns the registered type names, useful for

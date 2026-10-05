@@ -85,6 +85,20 @@ token  = %q
 # Default interval when a source doesn't set its own check_interval.
 check_interval = "1h"
 
+# Optional LLM summarizer for page_llm sources. The key itself
+# is never stored here — only where to find it. With no model
+# set, page_llm sources send a static from/to diff instead of
+# an LLM summary.
+#
+# [llm]
+# provider     = "responses"                    # openai, anthropic, or responses (match the model's endpoint)
+# server       = "https://opencode.ai/zen/go/v1" # opencode Go base URL
+# model        = "muse-spark-1.3-contributor"
+# api_key_env  = "OPENCODE_API_KEY"              # env var holding the key
+# api_key_file = "/path/to/key"                 # or a file (raw or JSON)
+# api_key_path = "opencode-go.key"              # dot path into a JSON store (e.g. ~/.pi/agent/auth.json)
+# max_tokens   = 300
+
 # Each [[sources]] block is one thing to monitor. The example below
 # is commented out — uncomment and edit to add your first source.
 #

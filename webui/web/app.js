@@ -85,6 +85,12 @@ async function loadAll() {
   $("#settings-topic").value = data.config?.ntfy?.topic || "";
   $("#settings-interval").value = data.config?.check?.interval || "";
   $("#settings-listen").value = data.config?.web?.listen || "";
+  $("#settings-llm-provider").value = data.config?.llm?.provider || "";
+  $("#settings-llm-server").value = data.config?.llm?.server || "";
+  $("#settings-llm-model").value = data.config?.llm?.model || "";
+  $("#settings-llm-api-key-env").value = data.config?.llm?.api_key_env || "";
+  $("#settings-llm-api-key-file").value = data.config?.llm?.api_key_file || "";
+  $("#settings-llm-api-key-path").value = data.config?.llm?.api_key_path || "";
 }
 
 function renderSources(sources, state) {
@@ -181,18 +187,22 @@ async function openContentDialog(src) {
     meta.className = "hint";
     meta.textContent = "Path: " + (src.path || "?");
     $("#content-body").appendChild(meta);
-  } else if (resp.type === "amazon") {
+  } else if (resp.type === "amazon" || resp.type === "page_llm") {
     // The amazon fetcher returns a single Item whose ID is
     // the formatted status string ("Out for delivery; Step 3
-    // of 4 (51%)"). Display it the same way as json_value
-    // so the user can see the current state at a glance.
+    // of 4 (51%)"). The page_llm fetcher returns the
+    // normalized page text. Display either the same way as
+    // json_value so the user can see the current state at a
+    // glance.
     const box = document.createElement("div");
     box.className = "value-box";
-    box.textContent = resp.value || "(no status yet — first run hasn't completed)";
+    box.textContent = resp.value || "(no content yet — first run hasn't completed)";
     $("#content-body").appendChild(box);
     const meta = document.createElement("p");
     meta.className = "hint";
-    meta.textContent = "Amazon shipment tracking. A notification fires when the status changes.";
+    meta.textContent = resp.type === "amazon"
+      ? "Amazon shipment tracking. A notification fires when the status changes."
+      : "Page content watched by selector. On change, the LLM summarizes the diff into the notification.";
     $("#content-body").appendChild(meta);
   } else if (resp.type === "html" || resp.type === "json") {
     const count = document.createElement("p");
@@ -294,6 +304,7 @@ function renderTypeFields(src) {
     json: ["items_path", "id_field", "title_field", "link_field"],
     json_value: ["path"],
     amazon: ["cookies", "referer"],
+    page_llm: ["selector", "prompt", "llm_model"],
   }[type] || [];
   for (const f of fields) {
     const label = document.createElement("label");
@@ -304,6 +315,14 @@ function renderTypeFields(src) {
     input.value = src?.[f] || "";
     label.appendChild(input);
     container.appendChild(label);
+  }
+  // page_llm-specific hint: explain the selector default and
+  // that the notification text comes from the LLM.
+  if (type === "page_llm") {
+    const hint = document.createElement("p");
+    hint.className = "hint";
+    hint.textContent = "Selector defaults to main (whole main content). On change, the LLM summarizes old vs new into a 2-3 sentence notification. prompt focuses the summary; llm_model overrides the global [llm] model for this source.";
+    container.appendChild(hint);
   }
   // amazon-specific hint: explain why cookies are
   // required and where to find them in the browser.
@@ -346,7 +365,7 @@ function collectSourceForm() {
   };
   // Type-specific fields.
   const type = data.type;
-  for (const f of ["owner", "repo", "ref", "path", "selector", "items_path", "id_field", "title_field", "link_field", "cookies", "referer"]) {
+  for (const f of ["owner", "repo", "ref", "path", "selector", "items_path", "id_field", "title_field", "link_field", "cookies", "referer", "prompt", "llm_model"]) {
     const el = $("#source-" + f);
     if (el && el.value) data[f] = el.value;
   }
@@ -404,6 +423,14 @@ $("#settings-form").addEventListener("submit", async (e) => {
     ntfy: { server: $("#settings-server").value, topic: $("#settings-topic").value },
     check: { interval: $("#settings-interval").value },
     web:   { listen: $("#settings-listen").value },
+    llm:   {
+      provider: $("#settings-llm-provider").value.trim(),
+      server: $("#settings-llm-server").value.trim(),
+      model: $("#settings-llm-model").value.trim(),
+      api_key_env: $("#settings-llm-api-key-env").value.trim(),
+      api_key_file: $("#settings-llm-api-key-file").value.trim(),
+      api_key_path: $("#settings-llm-api-key-path").value.trim(),
+    },
   };
   // Only include the token in the body if the user typed something.
   // An empty input means "don't change the token".

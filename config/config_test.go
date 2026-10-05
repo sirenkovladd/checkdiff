@@ -305,3 +305,64 @@ func keysOf(m map[string]interface{}) []string {
 // other *string fields in tests, where every call site needs
 // its own *string and a literal `&"x"` reads strangely.
 func ptr(s string) *string { return &s }
+
+func TestLoadLLMDefaults(t *testing.T) {
+	body := `
+[ntfy]
+topic = "test"
+
+[llm]
+model = "glm-5.3-flash"
+`
+	cfg, err := Load(writeConfig(t, body))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.LLM.Provider != "openai" {
+		t.Errorf("LLM.Provider = %q, want %q", cfg.LLM.Provider, "openai")
+	}
+	if cfg.LLM.Server != "https://opencode.ai/zen/go/v1" {
+		t.Errorf("LLM.Server = %q, want opencode Go base URL", cfg.LLM.Server)
+	}
+	if cfg.LLM.ApiKeyEnv != "OPENCODE_API_KEY" {
+		t.Errorf("LLM.ApiKeyEnv = %q, want OPENCODE_API_KEY", cfg.LLM.ApiKeyEnv)
+	}
+}
+
+func TestLoadLLMInvalidProvider(t *testing.T) {
+	body := `
+[ntfy]
+topic = "test"
+
+[llm]
+provider = "bogus"
+model = "m"
+server = "https://example.com"
+`
+	if _, err := Load(writeConfig(t, body)); err == nil {
+		t.Errorf("Load with invalid llm.provider: got nil error, want error")
+	}
+}
+
+func TestLoadPageLLMSource(t *testing.T) {
+	body := `
+[ntfy]
+topic = "test"
+
+[llm]
+model = "glm-5.3-flash"
+
+[[sources]]
+id   = "openprinter"
+name = "Openprinter campaign"
+type = "page_llm"
+url  = "https://www.crowdsupply.com/open-tools/openprinter"
+`
+	cfg, err := Load(writeConfig(t, body))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Sources[0].Selector != "main" {
+		t.Errorf("Selector = %q, want default %q", cfg.Sources[0].Selector, "main")
+	}
+}
