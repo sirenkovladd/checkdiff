@@ -15,6 +15,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"checkdiff/notify"
@@ -50,7 +51,12 @@ func ClickURLFor(s *source.Source, added []source.Item) string {
 //   - Subsequent run with no diff: just remember the new
 //     items.
 //   - Subsequent run with diff: publish to ntfy, then
-//     remember.
+//     remember. A fetcher may return an empty Notification
+//     (no Title and no Body) to suppress the publish — the
+//     raw items differed but there is nothing worth telling
+//     the user about (e.g. page_llm's LLM judged the change
+//     boilerplate). Suppressed runs still advance the
+//     baseline so the same churn doesn't re-fire next tick.
 //
 // verbose controls log output. Production passes false; tests
 // pass false too. The function still publishes on real diffs
@@ -120,6 +126,12 @@ func One(
 	}
 
 	n := source.Format(ctx, s, added, removed)
+	if strings.TrimSpace(n.Title) == "" && strings.TrimSpace(n.Body) == "" {
+		if verbose {
+			log.Printf("[%s] %d items, %d added, %d removed — suppressed (no meaningful change)", s.ID, len(items), len(added), len(removed))
+		}
+		return nil
+	}
 	topic := s.ResolvedTopic(ntfy.Topic())
 	if verbose {
 		log.Printf("[%s] notify attempt: topic=%s title=%q body=%d bytes", s.ID, topic, n.Title, len(n.Body))

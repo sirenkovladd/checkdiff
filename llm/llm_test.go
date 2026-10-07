@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -65,7 +66,7 @@ func TestResolveAPIKeyEnvWinsOverFile(t *testing.T) {
 }
 
 func TestSummarizeOpenAI(t *testing.T) {
-	var gotAuth, gotModel string
+	var gotAuth, gotModel, gotSystem string
 	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/chat/completions" {
 			t.Errorf("path = %q, want /chat/completions", r.URL.Path)
@@ -79,6 +80,7 @@ func TestSummarizeOpenAI(t *testing.T) {
 		if len(req.Messages) != 2 {
 			t.Errorf("messages = %d, want 2 (system+user)", len(req.Messages))
 		}
+		gotSystem = req.Messages[0].Content
 		_ = json.NewEncoder(rw).Encode(openAIResponse{
 			Choices: []struct {
 				Message struct {
@@ -104,6 +106,9 @@ func TestSummarizeOpenAI(t *testing.T) {
 	}
 	if gotModel != "test-model" {
 		t.Errorf("model = %q, want test-model", gotModel)
+	}
+	if !strings.Contains(gotSystem, "NO_MEANINGFUL_CHANGE") {
+		t.Errorf("system prompt missing NO_MEANINGFUL_CHANGE sentinel: %q", gotSystem)
 	}
 }
 

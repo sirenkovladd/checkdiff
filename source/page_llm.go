@@ -141,6 +141,16 @@ func (pageLLMfetcher) Validate(s *Source) error {
 // source line). On LLM failure — or with no summarizer — it
 // falls back to a truncated from/to diff so the change still
 // notifies.
+//
+// When the LLM reports no meaningful change (the
+// NO_MEANINGFUL_CHANGE sentinel, or a plain-language
+// equivalent like "no meaningful change"), Format returns
+// an empty Notification. check.One treats an empty
+// Notification (no title and no body) as "suppress": it
+// still advances the baseline via Remember, but publishes
+// nothing. This is what keeps boilerplate churn
+// (timestamps, counters, reworded-but-identical copy) from
+// paging the user with "No meaningful change" messages.
 func (pageLLMfetcher) Format(ctx context.Context, s *Source, added, removed []Item) Notification {
 	var oldVal, newVal string
 	if len(removed) > 0 {
@@ -160,6 +170,12 @@ func (pageLLMfetcher) Format(ctx context.Context, s *Source, added, removed []It
 		if err != nil {
 			log.Printf("[%s] llm summarize failed, using fallback: %v", s.ID, err)
 		} else if strings.TrimSpace(summary) != "" {
+			if isNoMeaningfulChange(summary) {
+				if fetchVerbose {
+					log.Printf("[%s] llm reports no meaningful change, suppressing notification", s.ID)
+				}
+				return Notification{}
+			}
 			// Summary only — no "Source:" trailer. The URL
 			// already travels in the ntfy Click header, so
 			// repeating it in the body is noise.
@@ -175,6 +191,76 @@ func (pageLLMfetcher) Format(ctx context.Context, s *Source, added, removed []It
 
 	// Fallback: static from/to (also the no-LLM path).
 	return formatPageLLMFallback(s, oldVal, newVal, click)
+}
+
+// noMeaningfulChangeSentinel is the exact string the LLM is
+// instructed to return when the old-vs-new diff carries no
+// meaningful change (see llm.Client.Summarize). Format treats
+// it as "suppress the notification".
+const noMeaningfulChangeSentinel = "NO_MEANINGFUL_CHANGE"
+
+// isNoMeaningfulChange reports whether an LLM summary means
+// "nothing worth notifying about". It accepts two shapes:
+//
+//  1. The NO_MEANINGFUL_CHANGE sentinel anywhere in the
+//     reply (exact contract with the system prompt; also
+//     matches when the model adds punctuation or a short
+//     trailer around it).
+//  2. A legacy plain-language opener ("no meaningful
+//     change…", "nothing changed…") for models that ignore
+//     the sentinel instruction but still open with the
+//     verdict. Contrastive follow-ups ("…but a launch date
+//     was announced") are NOT a no-change verdict, so any
+//     reply containing a contrast word is passed through.
+func isNoMeaningfulChange(summary string) bool {
+	t := strings.TrimSpace(summary)
+	if t == "" {
+		return false
+	}
+	if strings.Contains(strings.ToUpper(t), noMeaningfulChangeSentinel) {
+		return true
+	}
+	lower := strings.ToLower(t)
+	prefixes := []string{
+		"no meaningful change",
+		"no significant change",
+		"no material change",
+		"no substantive change",
+		"nothing meaningful",
+		"nothing significant",
+		"nothing changed",
+		"no change",
+		"no changes",
+		"only boilerplate",
+	}
+	matched := false
+	for _, p := range prefixes {
+		if strings.HasPrefix(lower, p) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return false
+	}
+	contrasts := []string{
+		" but ",
+		" however",
+		" although ",
+		" though ",
+		" except ",
+		" apart from",
+		" on the other hand",
+		"; but",
+		"—but",
+		"— but",
+	}
+	for _, c := range contrasts {
+		if strings.Contains(lower, c) {
+			return false
+		}
+	}
+	return true
 }
 
 // formatPageLLMFallback renders a truncated from/to body.

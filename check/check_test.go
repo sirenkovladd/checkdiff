@@ -57,6 +57,56 @@ func TestOnePublishesToResolvedTopic(t *testing.T) {
 	}
 }
 
+func TestOneSuppressesEmptyNotification(t *testing.T) {
+	// page_llm whose LLM reports NO_MEANINGFUL_CHANGE formats
+	// to an empty Notification. One must publish nothing but
+	// still advance the baseline so the same churn doesn't
+	// re-fire next tick.
+	old := source.SetLLMForTest(stubSummarizer{summary: "NO_MEANINGFUL_CHANGE"})
+	defer source.SetLLMForTest(old)
+
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	st := &state.State{Sources: map[string]*state.SourceState{}}
+	st.Remember("src", []source.Item{{ID: "old text", Title: "old text"}}, time.Now(), time.Now(), 0, 0, "")
+
+	ntfy := notify.New(srv.URL, "default-topic")
+	s := &source.Source{ID: "src", Name: "src", Type: "page_llm", URL: "https://example.com"}
+	if err := One(context.Background(), ntfy, st, s,
+		[]source.Item{{ID: "new text", Title: "new text"}},
+		time.Now(), time.Now(), true); err != nil {
+		t.Fatalf("One: %v", err)
+	}
+	if atomic.LoadInt32(&hits) != 0 {
+		t.Errorf("publish hits = %d, want 0 (suppressed)", hits)
+	}
+	// Baseline advanced to the new text.
+	ss := st.Snapshot("src")
+	if ss == nil || ss.Baseline == nil {
+		t.Fatalf("no state after suppressed run")
+	}
+	if !ss.Baseline.ItemsSeen["new text"] {
+		t.Errorf("baseline not advanced after suppress; seen=%v", ss.Baseline.ItemsSeen)
+	}
+	if ss.Baseline.ItemsSeen["old text"] {
+		t.Errorf("stale item still in baseline after suppress")
+	}
+}
+
+// stubSummarizer implements source.LLMSummarizer with a canned
+// reply so page_llm Format can be exercised through One
+// without a network call.
+type stubSummarizer struct{ summary string }
+
+func (s stubSummarizer) Summarize(ctx context.Context, model, sourceName, pageURL, oldText, newText, customPrompt string) (string, error) {
+	return s.summary, nil
+}
+
 func TestClickURLFor(t *testing.T) {
 	sourceURL := "https://api.uniuni.example"
 	trackingURL := "https://www.uniuni.com/tracking/#tracking-detail?no=U000180542908940"

@@ -271,6 +271,12 @@ func Validate(s *Source) error {
 // unknown type it returns a default notification (so a
 // misconfigured source still surfaces a clear error to the
 // user) rather than panicking.
+//
+// An empty Notification (no Title and no Body) means
+// "suppress": the fetcher saw a raw diff but judged it not
+// worth notifying about (e.g. page_llm's LLM reported no
+// meaningful change). check.One still advances the baseline
+// but publishes nothing.
 func Format(ctx context.Context, s *Source, added, removed []Item) Notification {
 	f, ok := registry[s.Type]
 	if !ok {

@@ -144,3 +144,50 @@ func TestPageLLMFormatFallbackNoLLM(t *testing.T) {
 		t.Errorf("no-LLM body = %q, want static diff", n.Body)
 	}
 }
+
+func TestPageLLMFormatSuppressesNoMeaningfulChange(t *testing.T) {
+	// The exact user-reported shape: raw text churned, the LLM
+	// judged it boilerplate. Format must return an empty
+	// Notification so check.One publishes nothing.
+	summaries := []string{
+		"NO_MEANINGFUL_CHANGE",
+		"  NO_MEANINGFUL_CHANGE.  ",
+		"no_meaningful_change",
+		"No meaningful change — the Openprinter campaign is still Coming Soon with the same two updates and no new pricing or launch date.",
+		"Nothing changed; the page shows the same status as before.",
+	}
+	for _, summary := range summaries {
+		old := SetLLMForTest(&fakeSummarizer{summary: summary})
+		s := &Source{ID: "x", Name: "Openprinter", Type: "page_llm", URL: "https://example.com/campaign"}
+		n := Format(context.Background(), s,
+			[]Item{{ID: "new", Title: "new text"}}, []Item{{ID: "old", Title: "old text"}})
+		if n.Title != "" || n.Body != "" {
+			t.Errorf("Format(%q) = %+v, want empty Notification (suppressed)", summary, n)
+		}
+		SetLLMForTest(old)
+	}
+}
+
+func TestIsNoMeaningfulChange(t *testing.T) {
+	cases := []struct {
+		summary string
+		want    bool
+	}{
+		{"NO_MEANINGFUL_CHANGE", true},
+		{"NO_MEANINGFUL_CHANGE.", true},
+		{"No meaningful change — still Coming Soon.", true},
+		{"Nothing changed; same status as before.", true},
+		{"Only boilerplate differs (timestamps).", true},
+		{"Campaign went live with early-bird pricing.", false},
+		// Contrastive follow-up: opens with "no X" but
+		// reports a real change after it — must notify.
+		{"No meaningful change in pricing, but a launch date was announced.", false},
+		{"No change in status, however a new update was posted.", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := isNoMeaningfulChange(c.summary); got != c.want {
+			t.Errorf("isNoMeaningfulChange(%q) = %v, want %v", c.summary, got, c.want)
+		}
+	}
+}

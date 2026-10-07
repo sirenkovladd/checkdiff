@@ -156,6 +156,14 @@ func parseKeyFile(b []byte) string {
 // means "no previous baseline text available" (shouldn't
 // normally happen — check.One only formats real diffs).
 //
+// When nothing meaningful changed (only boilerplate,
+// timestamps, ads, or rewording with the same facts), the
+// model is instructed to reply with exactly
+// NO_MEANINGFUL_CHANGE and nothing else. Callers (the
+// page_llm formatter) treat that sentinel as "suppress the
+// notification" — the raw text differed, but there is
+// nothing worth telling the user about.
+//
 // The signature intentionally uses only stdlib types so the
 // source package can consume it through a small interface
 // without importing this package's config types (which would
@@ -174,7 +182,8 @@ func (c *Client) Summarize(ctx context.Context, sourceName, pageURL, oldText, ne
 		"Reply with 2-3 short sentences of plain text, no markdown headers, no bullet lists. " +
 		"Say what actually changed that matters to someone tracking this page (status flips like " +
 		"'launching soon' to 'live', new dates, prices, availability, new entries). " +
-		"If nothing meaningful changed (only boilerplate/ads), say so in one sentence."
+		"If nothing meaningful changed (only boilerplate, timestamps, ads, or rewording with the same facts), " +
+		"reply with exactly NO_MEANINGFUL_CHANGE and nothing else."
 	user := fmt.Sprintf("Page: %s (%s)\n\nOLD TEXT:\n%s\n\nNEW TEXT:\n%s",
 		sourceName, pageURL, oldText, newText)
 	if strings.TrimSpace(customPrompt) != "" {
