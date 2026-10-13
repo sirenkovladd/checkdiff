@@ -305,6 +305,7 @@ function renderTypeFields(src) {
     json: ["items_path", "id_field", "title_field", "link_field"],
     json_value: ["path"],
     amazon: ["cookies", "referer"],
+    github_trending: ["forget_after"],
     page_llm: ["selector", "prompt", "llm_model"],
   }[type] || [];
   for (const f of fields) {
@@ -323,6 +324,14 @@ function renderTypeFields(src) {
     const hint = document.createElement("p");
     hint.className = "hint";
     hint.textContent = "Selector defaults to main (whole main content). On change, the LLM summarizes old vs new into a 2-3 sentence notification. prompt focuses the summary; llm_model overrides the global [llm] model for this source.";
+    container.appendChild(hint);
+  }
+  // github_trending-specific hint: explain the digest and
+  // the sliding forget window.
+  if (type === "github_trending") {
+    const hint = document.createElement("p");
+    hint.className = "hint";
+    hint.textContent = "One daily digest across the daily, weekly, and monthly windows. A repo notifies once, globally; re-sighting resets its timer, and repos absent longer than forget_after (default 720h) are forgotten. Use check_interval 0 9 * * * for a 9am digest.";
     container.appendChild(hint);
   }
   // amazon-specific hint: explain why cookies are

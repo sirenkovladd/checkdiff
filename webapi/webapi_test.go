@@ -815,3 +815,44 @@ func TestWebAPIRoutesStillRequireAuth(t *testing.T) {
 		})
 	}
 }
+
+func TestWebSourceContentTrending(t *testing.T) {
+	// A github_trending source's content endpoint returns the
+	// cached repo IDs as an items list (same shape as
+	// html/json) so the View dialog lists known repos.
+	ws := newTestWebServer(t, "secret")
+	handler := ws.RegisterForTest()
+	ws_state(ws).Sources["alpha"] = &state.SourceState{
+		Baseline: &state.Baseline{ItemsSeen: map[string]bool{"owner/repo": true}},
+		Record:   &state.Record{},
+	}
+	cfg := ws_cfg(ws)
+	for i := range cfg.Sources {
+		if cfg.Sources[i].ID == "alpha" {
+			cfg.Sources[i].Type = "github_trending"
+			break
+		}
+	}
+	req := httptest.NewRequest("GET", "/api/sources/alpha/content", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rw := httptest.NewRecorder()
+	handler.ServeHTTP(rw, req)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("GET content: got %d, want 200; body=%s", rw.Code, rw.Body.String())
+	}
+	var got struct {
+		Type  string `json:"type"`
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(rw.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Type != "github_trending" {
+		t.Errorf("type = %q, want github_trending", got.Type)
+	}
+	if len(got.Items) != 1 || got.Items[0].ID != "owner/repo" {
+		t.Errorf("items = %+v, want [owner/repo]", got.Items)
+	}
+}

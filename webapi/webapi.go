@@ -487,7 +487,7 @@ func (w *Server) handleSourceContent(rw http.ResponseWriter, r *http.Request, so
 		}
 		writeJSON(rw, map[string]any{"type": "page_llm", "value": value})
 
-	case "html", "json":
+	case "html", "json", "github_trending":
 		writeJSON(rw, map[string]any{"type": src.Type, "items": items})
 
 	case "github_file":
