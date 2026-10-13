@@ -133,6 +133,14 @@ type Source struct {
 	// change-worthy. Defaults to false (removals notify).
 	IgnoreRemovals bool `toml:"ignore_removals,omitempty" json:"ignore_removals,omitempty"`
 
+	// ForgetAfter is the sliding-window TTL for the
+	// github_trending seen-cache (e.g. "720h"). A repo
+	// absent from all windows for longer than this is
+	// forgotten and may notify again if it re-trends.
+	// Re-sighting a repo resets its timer. Empty means the
+	// fetcher default (720h). Other source types ignore it.
+	ForgetAfter string `toml:"forget_after,omitempty" json:"forget_after,omitempty"`
+
 	// Enabled controls whether the source is active. The pointer
 	// is used so a missing field (the common case for existing
 	// configs) is distinct from an explicit false: a nil pointer
@@ -234,12 +242,13 @@ type Fetcher interface {
 // registry maps a Source.Type string to its Fetcher. Adding a
 // new source type is one line here.
 var registry = map[string]Fetcher{
-	"github_file": githubFileFetcher{},
-	"html":        htmlFetcher{},
-	"json":        jsonFetcher{},
-	"json_value":  jsonValueFetcher{},
-	"amazon":      amazonFetcher{},
-	"page_llm":    pageLLMfetcher{},
+	"github_file":     githubFileFetcher{},
+	"html":            htmlFetcher{},
+	"json":            jsonFetcher{},
+	"json_value":      jsonValueFetcher{},
+	"amazon":          amazonFetcher{},
+	"github_trending": githubTrendingFetcher{},
+	"page_llm":        pageLLMfetcher{},
 }
 
 // SupportedTypes returns the registered type names, useful for
