@@ -36,6 +36,15 @@ channel of its own so its messages don't drown out the rest.
 The ntfy server is always the global one; only the channel
 differs.
 
+`html` / `json` sources can also set `ignore_removals = true`
+(blank or missing = `false`). Removals then don't notify: a
+removal-only diff is silently recorded, and a mixed diff
+notifies about the additions only. Useful for rolling-window
+pages (e.g. a changelog where old entries dropping off the
+page isn't change-worthy). Single-value sources (`amazon`,
+`json_value`, `page_llm`) keep their old → new pair on a value
+change; only a pure removal is suppressed.
+
 Source URLs can include `{{...}}` placeholders for cache-busting
 or timestamp injection. Supported placeholders:
 
@@ -202,6 +211,8 @@ TOML for you and the daemon hot-reloads).
   notification with separate **Added:** and **Removed:**
   sections listing the affected entries by their stable
   identifier. High-priority when there are 6+ changes.
+  With `ignore_removals = true`, removal-only diffs notify
+  nothing and mixed diffs list additions only.
 - `page_llm`: main content changed → one notification whose
   body is the LLM's 2-3 sentence summary (or a truncated
   from/to diff when no model is configured / the LLM call

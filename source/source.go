@@ -125,6 +125,14 @@ type Source struct {
 	// page. Other fetchers ignore this field.
 	Referer string `toml:"referer,omitempty" json:"referer,omitempty"`
 
+	// IgnoreRemovals suppresses notifications for removed items.
+	// When true, a removal-only diff publishes nothing (the
+	// baseline still advances), and a mixed diff notifies about
+	// the additions only. Useful for rolling-window pages (e.g.
+	// changelogs) where old entries dropping off the page isn't
+	// change-worthy. Defaults to false (removals notify).
+	IgnoreRemovals bool `toml:"ignore_removals,omitempty" json:"ignore_removals,omitempty"`
+
 	// Enabled controls whether the source is active. The pointer
 	// is used so a missing field (the common case for existing
 	// configs) is distinct from an explicit false: a nil pointer

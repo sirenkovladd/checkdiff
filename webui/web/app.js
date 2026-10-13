@@ -290,6 +290,7 @@ function openSourceDialog(src) {
   $("#source-topic").value = src?.topic || "";
   $("#source-interval").value = src?.check_interval || "";
   $("#source-enabled").checked = src?.enabled !== false;
+  $("#source-ignore-removals").checked = !!src?.ignore_removals;
   renderTypeFields(src);
   dlg.showModal();
 }
@@ -362,6 +363,7 @@ function collectSourceForm() {
     topic: get("#source-topic").trim(),
     check_interval: get("#source-interval").trim(),
     enabled: $("#source-enabled").checked,
+    ignore_removals: $("#source-ignore-removals").checked,
   };
   // Type-specific fields.
   const type = data.type;

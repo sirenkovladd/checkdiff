@@ -2,8 +2,10 @@ package check
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -96,6 +98,96 @@ func TestOneSuppressesEmptyNotification(t *testing.T) {
 	if ss.Baseline.ItemsSeen["old text"] {
 		t.Errorf("stale item still in baseline after suppress")
 	}
+}
+
+func TestOneIgnoreRemovals(t *testing.T) {
+	// runOne executes One against a capturing ntfy stub and
+	// returns the publish count plus the last Title header
+	// and body sent.
+	runOne := func(t *testing.T, s *source.Source, baseline, current []source.Item) (int32, string, string, *state.State) {
+		t.Helper()
+		var hits int32
+		var lastTitle, lastBody string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			atomic.AddInt32(&hits, 1)
+			lastTitle = r.Header.Get("Title")
+			b, _ := io.ReadAll(r.Body)
+			lastBody = string(b)
+			w.WriteHeader(200)
+		}))
+		t.Cleanup(srv.Close)
+
+		st := &state.State{Sources: map[string]*state.SourceState{}}
+		st.Remember(s.ID, baseline, time.Now(), time.Now(), 0, 0, "")
+
+		ntfy := notify.New(srv.URL, "default-topic")
+		if err := One(context.Background(), ntfy, st, s, current, time.Now(), time.Now(), false); err != nil {
+			t.Fatalf("One: %v", err)
+		}
+		return atomic.LoadInt32(&hits), lastTitle, lastBody, st
+	}
+
+	t.Run("removal-only diff is suppressed", func(t *testing.T) {
+		s := &source.Source{ID: "src", Name: "src", Type: "html", URL: "https://example.com", IgnoreRemovals: true}
+		hits, _, _, st := runOne(t, s,
+			[]source.Item{{ID: "a"}, {ID: "b"}},
+			[]source.Item{{ID: "a"}})
+		if hits != 0 {
+			t.Errorf("publish hits = %d, want 0 (removal ignored)", hits)
+		}
+		// Baseline still advances so the removal doesn't re-fire.
+		ss := st.Snapshot("src")
+		if ss == nil || ss.Baseline == nil {
+			t.Fatalf("no state after ignored run")
+		}
+		if ss.Baseline.ItemsSeen["b"] {
+			t.Errorf("stale item still in baseline after ignored removal")
+		}
+	})
+
+	t.Run("removal-only diff notifies without the flag", func(t *testing.T) {
+		s := &source.Source{ID: "src", Name: "src", Type: "html", URL: "https://example.com"}
+		hits, _, body, _ := runOne(t, s,
+			[]source.Item{{ID: "a"}, {ID: "b"}},
+			[]source.Item{{ID: "a"}})
+		if hits != 1 {
+			t.Fatalf("publish hits = %d, want 1", hits)
+		}
+		if !strings.Contains(body, "Removed:") {
+			t.Errorf("body should list removals, got:\n%s", body)
+		}
+	})
+
+	t.Run("mixed diff notifies added only", func(t *testing.T) {
+		s := &source.Source{ID: "src", Name: "src", Type: "html", URL: "https://example.com", IgnoreRemovals: true}
+		hits, _, body, _ := runOne(t, s,
+			[]source.Item{{ID: "a"}, {ID: "b"}},
+			[]source.Item{{ID: "a"}, {ID: "c"}})
+		if hits != 1 {
+			t.Fatalf("publish hits = %d, want 1", hits)
+		}
+		if !strings.Contains(body, "Added:") || !strings.Contains(body, "c") {
+			t.Errorf("body should list the addition, got:\n%s", body)
+		}
+		if strings.Contains(body, "Removed:") || strings.Contains(body, "b") {
+			t.Errorf("body should omit the removal, got:\n%s", body)
+		}
+	})
+
+	t.Run("single-value change keeps old and new", func(t *testing.T) {
+		s := &source.Source{ID: "src", Name: "src", Type: "json_value", URL: "https://example.com/api", IgnoreRemovals: true}
+		// json_value paths are validated only on Fetch;
+		// Format (the unit under test here) needs none.
+		hits, _, body, _ := runOne(t, s,
+			[]source.Item{{ID: "old", Title: "old"}},
+			[]source.Item{{ID: "new", Title: "new"}})
+		if hits != 1 {
+			t.Fatalf("publish hits = %d, want 1", hits)
+		}
+		if !strings.Contains(body, "From: old") || !strings.Contains(body, "To:   new") {
+			t.Errorf("body should keep the from/to pair, got:\n%s", body)
+		}
+	})
 }
 
 // stubSummarizer implements source.LLMSummarizer with a canned

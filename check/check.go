@@ -114,6 +114,30 @@ func One(
 	// changes.
 	defer st.Remember(s.ID, items, now, nextRun, len(added), len(removed), "")
 
+	// IgnoreRemovals: removals aren't change-worthy for this
+	// source (e.g. a rolling changelog window where old
+	// entries dropping off the page is routine). A
+	// removal-only diff publishes nothing; the baseline still
+	// advances via the deferred Remember so the same removals
+	// don't re-fire next tick.
+	if s.IgnoreRemovals && len(added) == 0 && len(removed) > 0 {
+		if verbose {
+			log.Printf("[%s] %d items, 0 added, %d removed — ignored (ignore_removals)", s.ID, len(items), len(removed))
+		}
+		return nil
+	}
+
+	// For list-style sources with IgnoreRemovals, a mixed
+	// diff notifies about the additions only. Single-value
+	// sources (amazon, json_value, page_llm) keep the full
+	// removed set so their Format still renders the old → new
+	// pair — the old value is the "from" half of the
+	// notification, not a "removal" to ignore.
+	notifyRemoved := removed
+	if s.IgnoreRemovals && (s.Type == "html" || s.Type == "json") {
+		notifyRemoved = nil
+	}
+
 	if len(added) == 0 && len(removed) == 0 {
 		if verbose {
 			log.Printf("[%s] %d items, 0 added, 0 removed", s.ID, len(items))
@@ -125,7 +149,7 @@ func One(
 		log.Printf("[%s] %d items, %d added, %d removed", s.ID, len(items), len(added), len(removed))
 	}
 
-	n := source.Format(ctx, s, added, removed)
+	n := source.Format(ctx, s, added, notifyRemoved)
 	if strings.TrimSpace(n.Title) == "" && strings.TrimSpace(n.Body) == "" {
 		if verbose {
 			log.Printf("[%s] %d items, %d added, %d removed — suppressed (no meaningful change)", s.ID, len(items), len(added), len(removed))

@@ -74,6 +74,8 @@
     <label>Interval <input name="check_interval" id="source-interval" placeholder="e.g. 30m or &quot;0 */6 * * *&quot; (blank = global default)"></label>
     <p class="hint">Accepts a Go duration (<code>30m</code>, <code>1h</code>) or a 5-field cron expression (<code>0 */6 * * *</code>).</p>
     <label>Enabled <input type="checkbox" name="enabled" id="source-enabled" checked></label>
+    <label>Ignore removals <input type="checkbox" name="ignore_removals" id="source-ignore-removals"></label>
+    <p class="hint">When checked, removals don't notify: a removal-only diff is silently recorded, and a mixed diff notifies about additions only. Useful for rolling-window pages (e.g. changelogs) where old entries dropping off isn't change-worthy.</p>
     <div id="source-type-fields"></div>
     <menu>
       <button value="cancel">Cancel</button>
