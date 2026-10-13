@@ -265,3 +265,91 @@ func TestClickURLFor(t *testing.T) {
 		})
 	}
 }
+
+func trendingCheckItem(id, window string) source.Item {
+	return source.Item{ID: id, Title: id, Body: window, Link: "https://github.com/" + id}
+}
+
+func trendingNtfy(t *testing.T, hits *int32, bodies *[]string) *notify.Client {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(hits, 1)
+		b, _ := io.ReadAll(r.Body)
+		if bodies != nil {
+			*bodies = append(*bodies, string(b))
+		}
+		w.WriteHeader(200)
+	}))
+	t.Cleanup(srv.Close)
+	return notify.New(srv.URL, "default-topic")
+}
+
+func TestOneTrendingFirstRunSilent(t *testing.T) {
+	// First run seeds the cumulative cache and stays quiet —
+	// no flood for the ~60 repos already trending.
+	var hits int32
+	ntfy := trendingNtfy(t, &hits, nil)
+	st := &state.State{Sources: map[string]*state.SourceState{}}
+	s := &source.Source{ID: "t", Name: "GH Trends", Type: "github_trending", URL: "https://github.com/trending", ForgetAfter: "720h"}
+
+	err := One(context.Background(), ntfy, st, s,
+		[]source.Item{trendingCheckItem("a", "daily"), trendingCheckItem("b", "weekly")},
+		time.Now(), time.Now(), false)
+	if err != nil {
+		t.Fatalf("One: %v", err)
+	}
+	if atomic.LoadInt32(&hits) != 0 {
+		t.Errorf("publish hits = %d, want 0 (first run silent)", hits)
+	}
+	ss := st.Snapshot("t")
+	if ss == nil || !ss.Baseline.ItemsSeen["a"] || !ss.Baseline.ItemsSeen["b"] {
+		t.Errorf("baseline not seeded: %+v", ss)
+	}
+}
+
+func TestOneTrendingCrossWindowDedup(t *testing.T) {
+	// A repo seen yesterday under "daily" suppresses today
+	// under "weekly": the dedup is global across windows.
+	var hits int32
+	var bodies []string
+	ntfy := trendingNtfy(t, &hits, &bodies)
+	st := &state.State{Sources: map[string]*state.SourceState{}}
+	now := time.Now()
+	st.RememberTrending("t", []source.Item{trendingCheckItem("a", "daily")}, now, now, 720*time.Hour)
+	s := &source.Source{ID: "t", Name: "GH Trends", Type: "github_trending", URL: "https://github.com/trending", ForgetAfter: "720h"}
+
+	err := One(context.Background(), ntfy, st, s,
+		[]source.Item{trendingCheckItem("a", "weekly"), trendingCheckItem("b", "daily")},
+		now.Add(24*time.Hour), now.Add(25*time.Hour), false)
+	if err != nil {
+		t.Fatalf("One: %v", err)
+	}
+	if atomic.LoadInt32(&hits) != 1 {
+		t.Fatalf("publish hits = %d, want 1", hits)
+	}
+	if !strings.Contains(bodies[0], "https://github.com/b") {
+		t.Errorf("notification should link new repo b, got %q", bodies[0])
+	}
+	if strings.Contains(bodies[0], "github.com/a") {
+		t.Errorf("notification should not repeat repo a, got %q", bodies[0])
+	}
+}
+
+func TestOneTrendingQuietSilent(t *testing.T) {
+	// No new repos → no notification, but the run still
+	// refreshes timers (no error, state intact).
+	var hits int32
+	ntfy := trendingNtfy(t, &hits, nil)
+	st := &state.State{Sources: map[string]*state.SourceState{}}
+	now := time.Now()
+	items := []source.Item{trendingCheckItem("a", "daily")}
+	st.RememberTrending("t", items, now, now, 720*time.Hour)
+	s := &source.Source{ID: "t", Name: "GH Trends", Type: "github_trending", URL: "https://github.com/trending", ForgetAfter: "720h"}
+
+	if err := One(context.Background(), ntfy, st, s, items, now.Add(24*time.Hour), now.Add(25*time.Hour), false); err != nil {
+		t.Fatalf("One: %v", err)
+	}
+	if atomic.LoadInt32(&hits) != 0 {
+		t.Errorf("publish hits = %d, want 0 (quiet day)", hits)
+	}
+}

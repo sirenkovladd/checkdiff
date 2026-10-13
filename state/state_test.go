@@ -5,6 +5,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"checkdiff/source"
 )
 
 func TestStateRecordErrorCreatesEntry(t *testing.T) {
@@ -279,4 +281,83 @@ func keys(m map[string]interface{}) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+func trendingTestItem(id, window string) source.Item {
+	return source.Item{ID: id, Title: id, Body: window, Link: "https://github.com/" + id}
+}
+
+func TestRememberTrendingSlidingTTL(t *testing.T) {
+	// The trending seen-cache merges (never replaces): new IDs
+	// report as added, re-sighted IDs refresh their timer and
+	// stay suppressed, IDs absent longer than forgetAfter are
+	// pruned and may notify again on return.
+	st := &State{Version: CurrentVersion, Sources: map[string]*SourceState{}}
+	ttl := 720 * time.Hour
+	now := time.Now().UTC().Truncate(time.Second)
+	next := now.Add(time.Hour)
+
+	added := st.RememberTrending("t",
+		[]source.Item{trendingTestItem("a", "daily"), trendingTestItem("b", "weekly")},
+		now, next, ttl)
+	if len(added) != 2 {
+		t.Fatalf("first run added = %d, want 2 (cold cache)", len(added))
+	}
+
+	// 7 days later: a and b re-sighted (suppressed, timer
+	// reset), c is new.
+	now2 := now.Add(7 * 24 * time.Hour)
+	added = st.RememberTrending("t",
+		[]source.Item{trendingTestItem("a", "monthly"), trendingTestItem("b", "daily"), trendingTestItem("c", "daily")},
+		now2, now2.Add(time.Hour), ttl)
+	if len(added) != 1 || added[0].ID != "c" {
+		t.Fatalf("added = %v, want [c]", added)
+	}
+	if got := st.Sources["t"].Baseline.SeenAt["a"]; !got.Equal(now2) {
+		t.Errorf("SeenAt[a] = %v, want refresh to %v", got, now2)
+	}
+
+	// 31 more days with only b sighted: a and c (absent 31d)
+	// are pruned. b's own timer also lapsed over the gap,
+	// so it re-reports (in production the daily sightings
+	// in between would have kept it suppressed).
+	now3 := now2.Add(31 * 24 * time.Hour)
+	added = st.RememberTrending("t",
+		[]source.Item{trendingTestItem("b", "daily")},
+		now3, now3.Add(time.Hour), ttl)
+	if len(added) != 1 || added[0].ID != "b" {
+		t.Fatalf("added = %v, want [b] (timer lapsed over gap)", added)
+	}
+	seen := st.Sources["t"].Baseline.ItemsSeen
+	if seen["a"] || seen["c"] {
+		t.Errorf("a and c should be pruned after 31d absence, seen=%v", seen)
+	}
+	if !seen["b"] {
+		t.Errorf("b should survive (sighted), seen=%v", seen)
+	}
+
+	// a returns after being forgotten: notifies again.
+	now4 := now3.Add(time.Hour)
+	added = st.RememberTrending("t",
+		[]source.Item{trendingTestItem("a", "daily"), trendingTestItem("b", "daily")},
+		now4, now4.Add(time.Hour), ttl)
+	if len(added) != 1 || added[0].ID != "a" {
+		t.Fatalf("added = %v, want [a] (forgotten, re-notify)", added)
+	}
+}
+
+func TestRememberTrendingLegacySeenAtNil(t *testing.T) {
+	// A baseline with ItemsSeen but no SeenAt (e.g. written
+	// before the field existed) must not flood: existing IDs
+	// are treated as seen-now, only truly new IDs report.
+	st := &State{Version: CurrentVersion, Sources: map[string]*SourceState{
+		"t": {Baseline: &Baseline{ItemsSeen: map[string]bool{"x": true}}, Record: &Record{}},
+	}}
+	now := time.Now().UTC()
+	added := st.RememberTrending("t",
+		[]source.Item{trendingTestItem("x", "daily"), trendingTestItem("y", "weekly")},
+		now, now.Add(time.Hour), 720*time.Hour)
+	if len(added) != 1 || added[0].ID != "y" {
+		t.Fatalf("added = %v, want [y]", added)
+	}
 }

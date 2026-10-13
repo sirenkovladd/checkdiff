@@ -83,19 +83,21 @@ type SourceState struct {
 // serialises to a coherent (if empty) object.
 func (s *SourceState) MarshalJSON() ([]byte, error) {
 	type wire struct {
-		ItemsSeen   map[string]bool `json:"items_seen,omitempty"`
-		ItemsHash   string          `json:"items_hash,omitempty"`
-		ItemsCount  int             `json:"items_count,omitempty"`
-		LastRun     string          `json:"last_run,omitempty"`
-		NextRun     string          `json:"next_run,omitempty"`
-		LastError   string          `json:"last_error,omitempty"`
-		LastAdded   int             `json:"last_added,omitempty"`
-		LastRemoved int             `json:"last_removed,omitempty"`
+		ItemsSeen   map[string]bool      `json:"items_seen,omitempty"`
+		SeenAt      map[string]time.Time `json:"seen_at,omitempty"`
+		ItemsHash   string               `json:"items_hash,omitempty"`
+		ItemsCount  int                  `json:"items_count,omitempty"`
+		LastRun     string               `json:"last_run,omitempty"`
+		NextRun     string               `json:"next_run,omitempty"`
+		LastError   string               `json:"last_error,omitempty"`
+		LastAdded   int                  `json:"last_added,omitempty"`
+		LastRemoved int                  `json:"last_removed,omitempty"`
 	}
 	var w wire
 	if s != nil {
 		if s.Baseline != nil {
 			w.ItemsSeen = s.Baseline.ItemsSeen
+			w.SeenAt = s.Baseline.SeenAt
 			w.ItemsHash = s.Baseline.ItemsHash
 			w.ItemsCount = s.Baseline.ItemsCount
 		}
@@ -228,20 +230,22 @@ func Load(path string) (*State, error) {
 // SourceState splits these into Baseline and Record, but the
 // on-disk shape is unchanged.
 type decodedV2 struct {
-	ItemsSeen   map[string]bool `json:"items_seen"`
-	LastRun     time.Time       `json:"last_run,omitempty"`
-	NextRun     time.Time       `json:"next_run,omitempty"`
-	LastError   string          `json:"last_error,omitempty"`
-	LastAdded   int             `json:"last_added,omitempty"`
-	LastRemoved int             `json:"last_removed,omitempty"`
-	ItemsHash   string          `json:"items_hash,omitempty"`
-	ItemsCount  int             `json:"items_count,omitempty"`
+	ItemsSeen   map[string]bool      `json:"items_seen"`
+	SeenAt      map[string]time.Time `json:"seen_at,omitempty"`
+	LastRun     time.Time            `json:"last_run,omitempty"`
+	NextRun     time.Time            `json:"next_run,omitempty"`
+	LastError   string               `json:"last_error,omitempty"`
+	LastAdded   int                  `json:"last_added,omitempty"`
+	LastRemoved int                  `json:"last_removed,omitempty"`
+	ItemsHash   string               `json:"items_hash,omitempty"`
+	ItemsCount  int                  `json:"items_count,omitempty"`
 }
 
 func (d decodedV2) toSourceState() *SourceState {
 	return &SourceState{
 		Baseline: &Baseline{
 			ItemsSeen:  d.ItemsSeen,
+			SeenAt:     d.SeenAt,
 			ItemsHash:  d.ItemsHash,
 			ItemsCount: d.ItemsCount,
 		},
@@ -351,14 +355,15 @@ type saveSnapshot struct {
 }
 
 type saveSourceSnapshot struct {
-	ItemsSeen   map[string]bool `json:"items_seen"`
-	LastRun     time.Time       `json:"last_run,omitempty"`
-	NextRun     time.Time       `json:"next_run,omitempty"`
-	LastError   string          `json:"last_error,omitempty"`
-	LastAdded   int             `json:"last_added,omitempty"`
-	LastRemoved int             `json:"last_removed,omitempty"`
-	ItemsHash   string          `json:"items_hash,omitempty"`
-	ItemsCount  int             `json:"items_count,omitempty"`
+	ItemsSeen   map[string]bool      `json:"items_seen"`
+	SeenAt      map[string]time.Time `json:"seen_at,omitempty"`
+	LastRun     time.Time            `json:"last_run,omitempty"`
+	NextRun     time.Time            `json:"next_run,omitempty"`
+	LastError   string               `json:"last_error,omitempty"`
+	LastAdded   int                  `json:"last_added,omitempty"`
+	LastRemoved int                  `json:"last_removed,omitempty"`
+	ItemsHash   string               `json:"items_hash,omitempty"`
+	ItemsCount  int                  `json:"items_count,omitempty"`
 }
 
 func snapshotSource(src *SourceState) *saveSourceSnapshot {
@@ -376,6 +381,12 @@ func snapshotSource(src *SourceState) *saveSourceSnapshot {
 			}
 		} else {
 			cp.ItemsSeen = map[string]bool{}
+		}
+		if src.Baseline.SeenAt != nil {
+			cp.SeenAt = make(map[string]time.Time, len(src.Baseline.SeenAt))
+			for k, v := range src.Baseline.SeenAt {
+				cp.SeenAt[k] = v
+			}
 		}
 	} else {
 		cp.ItemsSeen = map[string]bool{}
@@ -463,6 +474,12 @@ func cloneSourceState(src *SourceState) *SourceState {
 				b.ItemsSeen[k] = v
 			}
 		}
+		if src.Baseline.SeenAt != nil {
+			b.SeenAt = make(map[string]time.Time, len(src.Baseline.SeenAt))
+			for k, v := range src.Baseline.SeenAt {
+				b.SeenAt[k] = v
+			}
+		}
 		cp.Baseline = &b
 	}
 	if src.Record != nil {
@@ -493,18 +510,7 @@ func (s *State) Remember(sourceID string, items []source.Item, now, nextRun time
 		seen[it.ID] = true
 		ids = append(ids, it.ID)
 	}
-	sort.Strings(ids)
-	h := sha256.New()
-	for _, id := range ids {
-		h.Write([]byte(id))
-		h.Write([]byte("\n"))
-	}
-
-	hash := "sha256:" + hex.EncodeToString(h.Sum(nil))
-	// "sha256:" prefix makes the hash self-identifying —
-	// useful in the web UI and in any future log output where
-	// the user sees a bare 64-char hex string and wonders
-	// which hash algorithm produced it.
+	hash := fingerprintIDs(ids)
 
 	src := &SourceState{
 		Baseline: &Baseline{
@@ -523,6 +529,97 @@ func (s *State) Remember(sourceID string, items []source.Item, now, nextRun time
 	s.mu.Lock()
 	s.Sources[sourceID] = src
 	s.mu.Unlock()
+}
+
+// fingerprintIDs returns the stable "sha256:"-prefixed
+// fingerprint of a set of item IDs. The prefix makes the
+// hash self-identifying — useful in the web UI and in any
+// future log output where the user sees a bare 64-char hex
+// string and wonders which hash algorithm produced it.
+func fingerprintIDs(ids []string) string {
+	sorted := make([]string, len(ids))
+	copy(sorted, ids)
+	sort.Strings(sorted)
+	h := sha256.New()
+	for _, id := range sorted {
+		h.Write([]byte(id))
+		h.Write([]byte("\n"))
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil))
+}
+
+// RememberTrending diffs-and-remembers one github_trending
+// check against the cumulative seen-cache. Unlike Remember
+// (which replaces the baseline with the current page), the
+// trending baseline only grows: every currently-sighted ID
+// has its SeenAt refreshed to now (re-sighting resets the
+// sliding TTL and stays suppressed), IDs never seen before
+// — or absent longer than forgetAfter — report as added, and
+// cached IDs absent longer than forgetAfter are pruned so a
+// returning repo may notify again.
+//
+// The returned slice holds the current Items that are new
+// (deduplicated by ID). Callers publish when it is non-empty
+// and stay silent otherwise; the cache advances either way.
+func (s *State) RememberTrending(sourceID string, current []source.Item, now, nextRun time.Time, forgetAfter time.Duration) (added []source.Item) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	src, ok := s.Sources[sourceID]
+	if !ok || src == nil {
+		src = &SourceState{Baseline: &Baseline{}, Record: &Record{}}
+		s.Sources[sourceID] = src
+	}
+	if src.Baseline == nil {
+		src.Baseline = &Baseline{}
+	}
+	if src.Baseline.ItemsSeen == nil {
+		src.Baseline.ItemsSeen = map[string]bool{}
+	}
+	if src.Baseline.SeenAt == nil {
+		src.Baseline.SeenAt = map[string]time.Time{}
+		// Legacy baselines (written before SeenAt existed)
+		// count as seen-now so the upgrade doesn't flood.
+		for id := range src.Baseline.ItemsSeen {
+			src.Baseline.SeenAt[id] = now
+		}
+	}
+
+	reported := make(map[string]bool, len(current))
+	inCurrent := make(map[string]bool, len(current))
+	for _, it := range current {
+		inCurrent[it.ID] = true
+		last, known := src.Baseline.SeenAt[it.ID]
+		if !known || now.Sub(last) > forgetAfter {
+			if !reported[it.ID] {
+				reported[it.ID] = true
+				added = append(added, it)
+			}
+		}
+		src.Baseline.SeenAt[it.ID] = now
+		src.Baseline.ItemsSeen[it.ID] = true
+	}
+	for id, last := range src.Baseline.SeenAt {
+		if !inCurrent[id] && now.Sub(last) > forgetAfter {
+			delete(src.Baseline.SeenAt, id)
+			delete(src.Baseline.ItemsSeen, id)
+		}
+	}
+
+	ids := make([]string, 0, len(src.Baseline.ItemsSeen))
+	for id := range src.Baseline.ItemsSeen {
+		ids = append(ids, id)
+	}
+	src.Baseline.ItemsHash = fingerprintIDs(ids)
+	src.Baseline.ItemsCount = len(src.Baseline.ItemsSeen)
+	if src.Record == nil {
+		src.Record = &Record{}
+	}
+	src.Record.LastRun = now
+	src.Record.NextRun = nextRun
+	src.Record.LastError = ""
+	src.Record.LastAdded = len(added)
+	src.Record.LastRemoved = 0
+	return added
 }
 
 // RecordError updates only the Record fields (timestamps, error

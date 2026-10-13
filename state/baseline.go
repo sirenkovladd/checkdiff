@@ -1,5 +1,7 @@
 package state
 
+import "time"
+
 // Baseline is the diff baseline for one source: the set of item
 // IDs last observed, the count, and a stable fingerprint hash.
 // This is the only state a fetcher reads when computing the
@@ -17,6 +19,14 @@ type Baseline struct {
 	// source. The diff is computed by comparing this against
 	// the current set on each check.
 	ItemsSeen map[string]bool
+	// SeenAt records when each ID in ItemsSeen was last
+	// observed (i.e. present in a fetch). Only the
+	// github_trending source uses it: its baseline is a
+	// cumulative seen-cache with a sliding TTL, not the
+	// current page. Other types leave it nil. Forgotten
+	// IDs (absent longer than forget_after) are pruned
+	// from both maps.
+	SeenAt map[string]time.Time
 	// ItemsHash is a sha256 fingerprint of the sorted item IDs.
 	// The web UI shows this so the user can see at a glance
 	// whether the item set has changed since the last run.

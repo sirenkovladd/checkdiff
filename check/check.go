@@ -73,6 +73,15 @@ func One(
 ) error {
 	ss := st.Snapshot(s.ID)
 
+	// github_trending diffs against a cumulative seen-cache
+	// with a sliding TTL, not the current page (see
+	// state.RememberTrending). Removals are meaningless here
+	// — a repo leaving the page is routine — so only
+	// additions notify and quiet days stay silent.
+	if s.Type == "github_trending" {
+		return oneTrending(ctx, ntfy, st, ss, s, items, now, nextRun, verbose)
+	}
+
 	// First run for this source: record the baseline and stay
 	// quiet. We don't want a flood of "new" notifications for
 	// the 154 h3 entries that already exist on the
@@ -171,6 +180,69 @@ func One(
 	}
 	if verbose {
 		log.Printf("[%s] notify ok: %d added, %d removed", s.ID, len(added), len(removed))
+	}
+	return nil
+}
+
+// defaultTrendingForgetAfter is the sliding-TTL fallback when
+// the source's forget_after is missing or unparseable. The
+// fetcher's Validate normally guarantees a sane value; this
+// keeps a hand-edited config from wedging the check.
+const defaultTrendingForgetAfter = 720 * time.Hour
+
+// oneTrending runs the diff/notify decision for a
+// github_trending source. The seen-cache diff and the state
+// update happen together inside RememberTrending (refreshing
+// timers even on quiet days), so unlike the generic path
+// there is no deferred Remember and no removal handling.
+func oneTrending(
+	ctx context.Context,
+	ntfy *notify.Client,
+	st *state.State,
+	ss *state.SourceState,
+	s *source.Source,
+	items []source.Item,
+	now, nextRun time.Time,
+	verbose bool,
+) error {
+	forgetAfter, err := time.ParseDuration(s.ForgetAfter)
+	if err != nil || forgetAfter <= 0 {
+		forgetAfter = defaultTrendingForgetAfter
+	}
+
+	if ss == nil || ss.Baseline == nil {
+		st.RememberTrending(s.ID, items, now, nextRun, forgetAfter)
+		if verbose {
+			log.Printf("[%s] first run, trending cache seeded (%d items), no notification", s.ID, len(items))
+		}
+		return nil
+	}
+
+	added := st.RememberTrending(s.ID, items, now, nextRun, forgetAfter)
+	if len(added) == 0 {
+		if verbose {
+			log.Printf("[%s] %d items, 0 new repos", s.ID, len(items))
+		}
+		return nil
+	}
+
+	if verbose {
+		log.Printf("[%s] %d items, %d new repos", s.ID, len(items), len(added))
+	}
+	n := source.Format(ctx, s, added, nil)
+	if strings.TrimSpace(n.Title) == "" && strings.TrimSpace(n.Body) == "" {
+		return nil
+	}
+	topic := s.ResolvedTopic(ntfy.Topic())
+	if verbose {
+		log.Printf("[%s] notify attempt: topic=%s title=%q body=%d bytes", s.ID, topic, n.Title, len(n.Body))
+	}
+	if err := ntfy.PublishTo(ctx, topic, n); err != nil {
+		log.Printf("[%s] notify failed: %v", s.ID, err)
+		return fmt.Errorf("publish: %w", err)
+	}
+	if verbose {
+		log.Printf("[%s] notify ok: %d new repos", s.ID, len(added))
 	}
 	return nil
 }
