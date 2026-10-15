@@ -18,6 +18,7 @@ Each entry in `~/.config/checkdiff/config.toml` is a "source":
 | `json_value`  | A JSON API whose current state is a single field. The `path` is a dot-separated JSON path (e.g. `body.button_status.notification`) to the scalar value to watch. The value is treated as the entire signal; a change fires a notification ("from X to Y"). |
 | `amazon`      | An Amazon shipment tracking page (e.g. `https://www.amazon.ca/gp/your-account/ship-track?itemId=...&orderId=...&shipmentId=...`). The fetcher parses the `pt-status-milestones` div, extracts the current step (the `data-last-reached="true"` milestone's label), the in-progress percent (the next milestone's `data-percent-complete`), and the "Step X of Y" segment from the aria-label. The formatted status string (`"Out for delivery; Step 3 of 4 (51%)"`) is the Item's ID; a change fires a notification. Amazon requires session cookies, so the source config must include the `cookies` field (paste the `Cookie` header value from your browser's dev tools). |
 | `page_llm`    | A web page whose main content is summarized by an LLM. The `selector` (default `main`) extracts the page body text; any change fires a notification whose body is a 2-3 sentence LLM summary of old-vs-new (not a raw diff). When the LLM judges the change boilerplate-only it replies `NO_MEANINGFUL_CHANGE` and no notification is sent (the baseline still advances, so the same churn doesn't re-fire). Needs the global `[llm]` block (`provider` `openai`/`anthropic`/`responses` — match the model's endpoint table, e.g. `responses` for Muse Spark/Grok/GPT Luna; `server`, `model`, key via `api_key_env`/`api_key_file` + optional `api_key_path`) — e.g. an opencode Go subscription at `https://opencode.ai/zen/go/v1` with the key in `OPENCODE_API_KEY`. The client sends `x-opencode-session` (required) derived per-source. Optional per-source `prompt` (extra instruction) and `llm_model` (model override). With no model configured (or when the LLM call fails), the notification falls back to a truncated from/to diff so the change still notifies. |
+| `nfvl` | An NFVL (esportsdesk) team schedule, fetched with the form POST the page requires (`monthID=0` + team filter — plain GETs only return a partial page). One item per game with a stable ID (boxscore gameID, else date+teams); newly posted games notify as additions with date, matchup, and venue. Needs `league_id` + `team_id` (from `stats_1team.cfm` links); `client_id` defaults to `2768` (nfvl.ca). Pair with `ignore_removals = true` so only new postings notify. |
 | `github_trending` | GitHub trending digest: fetches the daily, weekly, and monthly windows (`?since=`) in one check and notifies once per new `owner/repo` as markdown links grouped by window. The seen-cache is global across windows with a sliding TTL (`forget_after`, default `"720h"`): re-sighting a repo resets its timer, and repos absent longer than the TTL are forgotten and may notify again. Append `?language=go` to `url` to filter by language. Best paired with a daily cron (`check_interval = "0 9 * * *"`). |
 
 Each source can set its own `check_interval` — either a Go
@@ -209,6 +210,19 @@ forget_after   = "720h"
 # selector       = "main"   # default; whole main content
 # prompt         = "Focus on launch status, pricing, dates, and new updates; ignore press links."
 # llm_model      = ""       # blank = global [llm].model
+
+# NFVL team schedule. The fetcher POSTs the esportsdesk form
+# (plain GETs return a partial page), so league_id + team_id
+# are required; client_id defaults to 2768 (nfvl.ca).
+# [[sources]]
+# id              = "el-fuego-oct21"
+# name            = "El Fuego Oct 21 game"
+# type            = "nfvl"
+# league_id       = 6972
+# team_id         = 677054
+# enabled         = true
+# check_interval  = "1h"
+# ignore_removals = true   # only newly posted games notify
 ```
 
 To disable a source temporarily, set `enabled = false`. To
