@@ -89,6 +89,11 @@ type Source struct {
 	// single-package source.
 	Link string `toml:"link,omitempty" json:"link,omitempty"`
 
+	// NFVL-specific (esportsdesk schedule watched via form POST)
+	LeagueID int `toml:"league_id,omitempty" json:"league_id,omitempty"`
+	TeamID   int `toml:"team_id,omitempty" json:"team_id,omitempty"`
+	ClientID int `toml:"client_id,omitempty" json:"client_id,omitempty"`
+
 	// Topic overrides the global [ntfy].topic for this source,
 	// routing its notifications to a separate ntfy channel.
 	// Optional — empty (or whitespace-only) means "use the
@@ -249,6 +254,7 @@ var registry = map[string]Fetcher{
 	"amazon":          amazonFetcher{},
 	"github_trending": githubTrendingFetcher{},
 	"page_llm":        pageLLMfetcher{},
+	"nfvl":            nfvlFetcher{},
 }
 
 // SupportedTypes returns the registered type names, useful for
