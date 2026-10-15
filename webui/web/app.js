@@ -307,6 +307,7 @@ function renderTypeFields(src) {
     amazon: ["cookies", "referer"],
     github_trending: ["forget_after"],
     page_llm: ["selector", "prompt", "llm_model"],
+    nfvl: ["league_id", "team_id", "client_id"],
   }[type] || [];
   for (const f of fields) {
     const label = document.createElement("label");
@@ -332,6 +333,13 @@ function renderTypeFields(src) {
     const hint = document.createElement("p");
     hint.className = "hint";
     hint.textContent = "One daily digest across the daily, weekly, and monthly windows. A repo notifies once, globally; re-sighting resets its timer, and repos absent longer than forget_after (default 720h) are forgotten. Use check_interval 0 9 * * * for a 9am digest.";
+    container.appendChild(hint);
+  }
+  // nfvl-specific hint: explain where the IDs come from.
+  if (type === "nfvl") {
+    const hint = document.createElement("p");
+    hint.className = "hint";
+    hint.textContent = "esportsdesk league + team IDs (find them in stats_1team.cfm links, e.g. league 6972, team 677054 for El Fuego NE). client_id defaults to 2768 (nfvl.ca). URL is optional — leave blank for the canonical schedule URL.";
     container.appendChild(hint);
   }
   // amazon-specific hint: explain why cookies are
