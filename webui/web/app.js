@@ -384,9 +384,18 @@ function collectSourceForm() {
   };
   // Type-specific fields.
   const type = data.type;
-  for (const f of ["owner", "repo", "ref", "path", "selector", "items_path", "id_field", "title_field", "link_field", "cookies", "referer", "prompt", "llm_model"]) {
+  for (const f of ["owner", "repo", "ref", "path", "selector", "items_path", "id_field", "title_field", "link_field", "cookies", "referer", "prompt", "llm_model", "forget_after"]) {
     const el = $("#source-" + f);
     if (el && el.value) data[f] = el.value;
+  }
+  // Numeric fields: the server decodes these as JSON numbers,
+  // so strings would fail validation. Send numbers or omit.
+  for (const f of ["league_id", "team_id", "client_id"]) {
+    const el = $("#source-" + f);
+    if (el && el.value.trim() !== "") {
+      const n = parseInt(el.value, 10);
+      if (!Number.isNaN(n)) data[f] = n;
+    }
   }
   // For json_value, an empty path would fail server-side
   // validation. Surface the field even when blank so the user
